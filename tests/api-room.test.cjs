@@ -498,3 +498,64 @@ test('inactive live monitor falls back to one reply for already sent world text'
   assert.equal(replies,1,'fallback requests precisely one room reply');
   assert.equal(h.b.tabs[virtual].reply,'It is raining.');
 });
+
+test('recovering an awaiting world event resumes live monitoring without requesting an API reply',async()=>{
+  const h=harness('[say room]\nYou are warm after walking.'),s=h.b.apiSession;
+  s.monitorEnabled=true;s.monitorTabId='555';
+  const url='https://nomi.ai/nomis/'+NOMI;
+  await h.driver.observeLive('555',{site:'nomi',url,liveMessages:[
+    {speaker:'User',text:'Hi Gwen',key:'u1'}
+  ]});
+  let roomSends=0,roomReplies=0;
+  h.driver.request=async(path)=>{
+    if(path.endsWith('/chat')){roomSends++;return {};}
+    if(path.endsWith('/chat/request')){roomReplies++;return {replyMessage:{messageText:'Unwanted reply'}};}
+    throw Error('unexpected '+path);
+  };
+  await h.driver.pump();await h.settle();
+  assert.equal((await h.cp.load(ROOM)).status,'awaiting_reply');
+  assert.equal(h.b.apiSession.pendingReply,'live_wait');
+  h.b.stop();
+  globalThis.chrome.tabs.sendMessage=async tabId=>Number(tabId)===555
+    ?{snapshot:{site:'nomi',url,liveMessages:[
+      {speaker:'User',text:'Hi Gwen',key:'u1'},
+      {speaker:'Nomi',text:'I made myself lunch',key:'n2'}
+    ]}}
+    :{snapshot:{...h.source}};
+  const result=await h.driver.recover(ROOM,'reply',{
+    nomiUuid:NOMI,chatgptTab:GPT_ID,monitorLive:true,monitorTab:'555',monitorIdleSeconds:300
+  });
+  assert.equal(result.monitoring,true);
+  assert.equal(h.b.apiSession.pendingReply,'live_wait');
+  assert.equal(h.b.running,true);
+  assert.equal(roomSends,1);
+  assert.equal(roomReplies,0,'recovery must not request a second Nomi turn in active live monitor mode');
+  await h.driver.pump();await h.settle();
+  assert.equal(roomReplies,0);
+});
+
+test('passive [wait] can Stop and Play without creating a Nomi checkpoint',async()=>{
+  const h=harness('[wait]');
+  h.driver.request=async()=>{throw Error('No API request expected');};
+  await h.driver.pump();await h.settle();
+  assert.equal(await h.cp.load(ROOM),null);
+  assert.equal(h.b.apiSession.pendingReply,'live_wait');
+  h.b.stop();
+  h.b.start({mode:'api-room',tabs:[GPT_ID,virtual],first:'first',settle:8});
+  assert.equal(h.b.running,true);
+  assert.equal(h.b.apiSession.pendingReply,'live_wait');
+  assert.equal(h.b.command,null);
+});
+
+test('direct chat cannot accidentally forward World Engine control tags to Nomi',()=>{
+  const b=new GroupBridge(()=>100);
+  b.heartbeat('10',{site:'chatgpt',reply:'[tail]',replyKey:'q1',
+    url:'https://chatgpt.com/c/test',document:'g',ready:true,complete:true,busy:false,draft:false,error:''});
+  b.heartbeat('20',{site:'nomi',reply:'Hello',replyKey:'n1',
+    url:'https://nomi.ai/nomis/nomi-test',document:'n',ready:true,complete:true,busy:false,draft:false,error:''});
+  b.start({mode:'direct',tabs:['10','20'],first:'first',settle:3});
+  b.tabs['10'].changed=0;b.tick();
+  assert.equal(b.running,false);
+  assert.equal(b.command,null);
+  assert.match(b.reason,/control tag blocked/i);
+});
