@@ -85,16 +85,31 @@ class WorldObserver {
     return result.join('');
   }
 }
-/* Return complete NEW private-chat exchanges, never a lone user message.
- * A run of User messages is buffered until Nomi replies; the returned cursor
- * stops at that last completed Nomi message so later User messages survive.
+/* Catch up from the last acknowledged listening cursor. Require a User
+ * message FOLLOWED by a completed Nomi reply. Buffer unpaired User messages.
+ * Bound each packet to avoid overflowing the browser/ChatGPT composer.
+ * Additional complete exchanges stay queued for the next [listening].
  */
-function completedLiveExchange(events,lastDeliveredSeq=0) {
-  if(!Array.isArray(events))return {events:[],cursor:lastDeliveredSeq};
+function completedLiveExchange(events,lastDeliveredSeq=0,maxChars=24000) {
+  if(!Array.isArray(events))return {events:[],cursor:lastDeliveredSeq,remaining:0};
   const fresh=events.filter(e=>e&&e.channel==='live'&&e.seq>lastDeliveredSeq);
-  const lastNomi=[...fresh].reverse().find(e=>e.speaker==='Nomi');
-  if(!lastNomi)return {events:[],cursor:lastDeliveredSeq};
-  return {events:fresh.filter(e=>e.seq<=lastNomi.seq),cursor:lastNomi.seq};
+  let seenUser=false,completedIndex=-1,lastFit=-1,used=0,fitUsed=0;
+  for(let i=0;i<fresh.length;i++) {
+    const event=fresh[i];
+    used+=String(event.text||'').length+145;
+    if(event.speaker==='User')seenUser=true;
+    if(seenUser&&event.speaker==='Nomi'){
+      completedIndex=i;
+      if(used<=maxChars){lastFit=i;fitUsed=used;}
+    }
+  }
+  if(completedIndex<0)return {events:[],cursor:lastDeliveredSeq,remaining:fresh.length};
+  // Each event is already truncated to 6k. A single exchange fits in 24k.
+  if(lastFit<0)return {events:[],cursor:lastDeliveredSeq,remaining:fresh.length,
+    error:'First live exchange exceeded the safe delivery size.'};
+  const batch=fresh.slice(0,lastFit+1);
+  return {events:batch,cursor:batch.at(-1).seq,remaining:fresh.length-batch.length,
+    truncated:completedIndex>lastFit};
 }
 function parseWorldCommand(text) {
   if (typeof text !== 'string' || !text.trim()) return {kind:'invalid',reason:'Empty World Engine command.'};
