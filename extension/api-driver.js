@@ -360,7 +360,11 @@ class NomiApiDriver {
         await this.transaction(()=>{
           const b=this.getBridge(),s=b?.apiSession;
           if(s?.roomId===cp.roomId){
-            if(tryNumber>1)b.log('Nomi API room reply succeeded on attempt '+tryNumber+'.');
+            if(tryNumber>1){
+              const message='Nomi API room reply succeeded on attempt '+tryNumber+'.';
+              if(!b.running||b.phase==='uncertain')b.note(message);
+              else b.log(message);
+            }
             s.replyLastErrorType=null;
             s.replyLastHttpStatus=null;
             s.replyNextRetrySeconds=null;
@@ -400,6 +404,17 @@ class NomiApiDriver {
     await this.transaction(()=>{
       const b=this.getBridge(),s=b.apiSession;
       if(b.mode!=='api-room'||s?.roomId!==cp.roomId)return;
+      if(!b.running||b.phase==='uncertain'){
+        // The remote room reply was committed durably BEFORE this callback.
+        // Do not erase the stop reason or attempt to send to a changed GPT
+        // conversation. The operator can recover the already-saved reply.
+        s.pendingReply='reply_saved';
+        delete s.progress;
+        b.note('Nomi API reply was saved after the bridge stopped. NOT delivered to GPT. '+
+          'Restore the original ChatGPT conversation and use Recover Reply; '+
+          'no additional Nomi API request or world POST is needed.');
+        return;
+      }
       const id=NomiApiRoom.apiRoomId(cp.roomId),prior=b.tabs[id]||{};
       s.pendingReply='delivering';delete s.progress;
       if(liveCursor)s.monitorPendingSeq=liveCursor;
