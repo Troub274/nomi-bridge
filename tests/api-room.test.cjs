@@ -344,3 +344,54 @@ test('open but idle private chat returns to room replies after inactivity thresh
   await h.driver.pump();await h.settle();
   assert.equal(replies,1);
 });
+
+test('regression: [wait] is silent when monitor is disabled; it is not posted to Nomi',async()=>{
+  const h=harness('[wait]');
+  h.b.apiSession.monitorEnabled=false;
+  let requests=0;
+  h.driver.request=async()=>{requests++;throw Error('Unexpected Nomi API request triggered by [wait]');};
+  await h.driver.pump();await h.settle();
+  assert.equal(requests,0);
+  assert.equal(h.b.apiSession.pendingReply,'live_wait');
+  assert.equal(h.b.running,true);
+  assert.equal(h.b.command,null);
+  assert.equal(h.b.tabs[virtual].reply,'');
+  await h.driver.pump();await h.settle();
+  assert.equal(requests,0,'idle pump cannot fabricate a room reply request');
+  assert.equal(h.b.tabs[virtual].reply,'','idle pump cannot fabricate a GPT update');
+});
+
+test('regression: [wait] with monitor enabled but no live messages remains passive',async()=>{
+  const h=harness('[wait]');
+  h.b.apiSession.monitorEnabled=true;
+  h.b.apiSession.monitorTabId='555';
+  let requests=0;
+  h.driver.request=async()=>{requests++;throw Error('Unexpected API request');};
+  await h.driver.pump();await h.settle();
+  assert.equal(h.b.apiSession.pendingReply,'live_wait');
+  assert.equal(h.b.tabs[virtual].reply,'');
+  h.b.apiSession.monitorSeen=0;h.b.apiSession.monitorCount=0;
+  await h.driver.pump();await h.settle();
+  assert.equal(requests,0);
+  assert.equal(h.b.tabs[virtual].reply,'','no synthetic no-chat response may prompt GPT');
+});
+
+test('regression: [listening] without a new message never requests a new Nomi turn',async()=>{
+  const h=harness('[listening]');
+  h.b.apiSession.monitorEnabled=true;
+  h.b.apiSession.monitorTabId='555';
+  const previous=await h.driver.observer.observeLive(ROOM,'https://nomi.ai/nomis/'+NOMI,[
+    {speaker:'Nomi',text:'I am having lunch.',key:'observed-1'}
+  ]);
+  h.b.apiSession.monitorLastSeq=previous.at(-1).seq;
+  h.b.apiSession.monitorSeen=Date.now();h.b.apiSession.monitorCount=1;
+  h.b.apiSession.monitorLastActivity=Date.now();
+  let requests=0;
+  h.driver.request=async()=>{requests++;throw Error('Unexpected API request');};
+  await h.driver.pump();await h.settle();
+  assert.equal(h.b.apiSession.pendingReply,'live_wait');
+  assert.equal(h.b.tabs[virtual].reply,'');
+  await h.driver.pump();await h.settle();
+  assert.equal(requests,0);
+  assert.equal(h.b.tabs[virtual].reply,'');
+});
