@@ -701,3 +701,30 @@ test('GPT commentary before [say room] is stripped and only the world update is 
   assert.equal(replies,0);
   assert.match(h.b.tabs[virtual].reply,/DELIVERY CONFIRMED/);
 });
+
+test('upgrading a stranded live_wait world POST ACKs GPT without resending Nomi content',async()=>{
+  const h=harness('[say room]\nThe tea kettle whistles.'),s=h.b.apiSession;
+  s.monitorEnabled=true;s.monitorTabId='555';
+  await h.driver.observeLive('555',{site:'nomi',url:'https://nomi.ai/nomis/'+NOMI,
+    liveMessages:[{speaker:'User',text:'Hello',key:'u1'}]});
+  let sends=0,replies=0;
+  h.driver.request=async path=>{
+    if(path.endsWith('/chat')){sends++;return {};}
+    if(path.endsWith('/chat/request')){replies++;return {replyMessage:{messageText:'bad'}};}
+    throw Error('Unexpected '+path);
+  };
+  const realAck=h.driver.confirmWorldDelivery.bind(h.driver);
+  h.driver.confirmWorldDelivery=async()=>{};
+  await h.driver.pump();await h.settle();
+  h.driver.confirmWorldDelivery=realAck;
+  assert.equal(sends,1);
+  assert.equal((await h.cp.load(ROOM)).status,'awaiting_reply');
+  // The previous build stored this state while it waited for Test.
+  s.pendingReply='live_wait';
+  h.b.source=virtual;
+  await h.driver.pump();await h.settle();
+  assert.equal(sends,1,'no duplicate world POST');
+  assert.equal(replies,0,'no room reply request in active private monitor');
+  assert.match(h.b.tabs[virtual].reply,/DELIVERY CONFIRMED/);
+  assert.equal((await h.cp.load(ROOM)).status,'reply_received');
+});
