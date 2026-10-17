@@ -493,13 +493,47 @@ class NomiApiDriver {
       return;
     }
     if(b.source===id&&s.pendingReply==='live_wait'){
-      const fresh=(await this.observer.history(s.roomId)).filter(e=>e.channel==='live'&&e.seq>(s.monitorLastSeq||0));
-      if(fresh.length){
-        s.monitorLastSeq=fresh.at(-1).seq;
-        await this.publishObservation(s.roomId,this.observer.format(fresh.slice(-10),'NEW PRIVATE CHAT ACTIVITY'));
+      // Listening after [wait] is passive. After a WORLD SEND the checkpoint
+      // remains awaiting_reply so a Nomi room reply can be requested later
+      // if the real conversation becomes inactive. Never replay old history
+      // as if it were a new live message.
+      const cp=await this.checkpoint.load(s.roomId);
+      const fresh=s.monitorEnabled
+        ? (await this.observer.history(s.roomId)).filter(e=>e.channel==='live'&&e.seq>(s.monitorLastSeq||0))
+        : [];
+      if(fresh.length) {
+        this.inFlight=true;
+        try {
+          const observation=this.observer.format(fresh.slice(-10),'NEW PRIVATE CHAT ACTIVITY',16000);
+          s.monitorLastSeq=fresh.at(-1).seq;
+          if(cp?.status==='awaiting_reply'){
+            // A real new live observation resolves the world event without
+            // making any API /chat/request call. Persist it until GPT ack.
+            await this.checkpoint.replyCommitted(cp,observation);
+            await this.completeReply(cp,observation);
+          } else {
+            await this.publishObservation(s.roomId,observation);
+          }
+        } catch(error){await this.fail('Live observation delivery halted: '+error.message);}
+        finally{this.inFlight=false;queueMicrotask(()=>void this.pump());}
+      } else if(cp?.status==='awaiting_reply'&&!this.isLiveAvailable(s)){
+        // No new private-chat activity. Fall back to ONE Nomi room reply for
+        // the ALREADY SENT world event. Never resend the world content.
+        this.inFlight=true;this.waitCancelled=false;
+        try {
+          await this.transaction(()=>{
+            const state=this.getBridge();
+            if(state.apiSession?.roomId===s.roomId){
+              state.apiSession.pendingReply='inflight';
+              state.log('Private chat inactive; requesting the pending Nomi API room reply.');
+            }
+          });
+          const reply=await this.requestReply(cp);
+          await this.observer.roomEvent(s.roomId,'Nomi',reply,'nomi-reply-'+cp.turnId);
+          await this.completeReply(cp,reply);
+        } catch(error){await this.fail('API room fallback halted: '+error.message);}
+        finally{this.inFlight=false;queueMicrotask(()=>void this.pump());}
       }
-      // No activity is a valid stable state, even if the tab has closed.
-      // Only a new explicit world message may request a Nomi room reply.
       return;
     }
     if(b.source===id&&s.pendingReply==='ready') {
@@ -509,12 +543,18 @@ class NomiApiDriver {
         if(!cp||cp.status!=='awaiting_reply')throw Error('Missing confirmed content checkpoint; refusing reply request.');
         await this.transaction(()=>{this.getBridge().apiSession.pendingReply='inflight';});
         if(this.isLiveAvailable(s)){
-          const latest=(await this.observer.history(s.roomId)).filter(e=>e.channel==='live').slice(-10);
-          const intro='WORLD EVENT DELIVERED TO THE API ROOM. No API reply requested because private chat monitoring is active.\n';
-          const reply=intro+(latest.length?this.observer.format(latest,'RECENT LIVE CHAT'):'No recent private-chat messages.');
-          await this.checkpoint.replyCommitted(cp,reply);
-          await this.completeReply(cp,reply);
-          s.monitorLastSeq=latest.at(-1)?.seq||s.monitorLastSeq||0;
+          // Do not manufacture a reply by replaying already-seen conversation.
+          // The checkpoint remains safely awaiting_reply until new live
+          // activity or a fallback Nomi API reply resolves it.
+          const recent=(await this.observer.history(s.roomId)).filter(e=>e.channel==='live');
+          s.monitorLastSeq=recent.at(-1)?.seq||s.monitorLastSeq||0;
+          await this.transaction(()=>{
+            const state=this.getBridge();
+            if(state.apiSession?.roomId===s.roomId){
+              state.apiSession.pendingReply='live_wait';
+              state.log('World event sent. Waiting for NEW private-chat activity; no room reply requested.');
+            }
+          });
         }else {
           const reply=await this.requestReply(cp);
           await this.observer.roomEvent(s.roomId,'Nomi',reply,'nomi-reply-'+cp.turnId);
