@@ -1,4 +1,4 @@
-importScripts('engine.js', 'group.js', 'api-room.js', 'api-checkpoint.js', 'api-driver.js');
+importScripts('engine.js', 'group.js', 'api-room.js', 'api-checkpoint.js', 'world-observer.js', 'api-driver.js');
 let bridge;
 let queue = Promise.resolve();
 const apiDriver = new NomiApiDriver(() => bridge, transaction);
@@ -71,7 +71,11 @@ function discoverTabs() {
         await bounded(chrome.scripting.executeScript({target:{tabId:t.id},files:['content.js']}));
         info = await bounded(chrome.tabs.sendMessage(t.id,{type:'inspect'}));
       }
-      if (info?.snapshot) await transaction(() => bridge.heartbeat(String(t.id),{...info.snapshot,browser:'Edge',window:t.windowId}));
+      if (info?.snapshot) await transaction(async () => {
+        await apiDriver.observeLive(String(t.id),info.snapshot);
+        const {liveMessages,...rest}=info.snapshot;
+        bridge.heartbeat(String(t.id),{...rest,browser:'Edge',window:t.windowId});
+      });
       } catch (error) {
         const entry = availableTabs.find(x=>x.id===String(t.id));
         if(entry) entry.diagnostic = 'Not connected: '+error.message;
@@ -151,7 +155,9 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
     if (sender.tab && /^https:\/\/(chatgpt\.com|chat\.openai\.com|(?:[a-z0-9-]+\.)?nomi\.ai)\//.test(sender.url || '')) {
       const tab = String(sender.tab.id);
       if (message.path === '/api/heartbeat') {
-        const result = bridge.heartbeat(tab, {...data.snapshot, browser: 'Edge', window: sender.tab.windowId});
+        await apiDriver.observeLive(tab,data.snapshot);
+        const {liveMessages,...snapshot}=data.snapshot||{};
+        const result = bridge.heartbeat(tab, {...snapshot, browser: 'Edge', window: sender.tab.windowId});
         if (result.command) {
           if (!await verifySource(result.command)) return {};
           // Keep the receiving editor out of inactive-tab timer throttling during Send.
@@ -183,6 +189,12 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
         if (apiDriver.inFlight) throw Error('A Nomi API operation is still in progress.');
         if (data.mode === 'api-room') await apiDriver.prepareStart(data);
         bridge.start(data);
+        if(data.mode==='api-room' && data.monitorLive && data.monitorTab){
+          try {
+            const info=await chrome.tabs.sendMessage(Number(data.monitorTab),{type:'inspect'});
+            await apiDriver.observeLive(String(data.monitorTab),info?.snapshot);
+          }catch(error){bridge.log('Private-chat monitor is waiting for the selected tab to reconnect.');}
+        }
         return bridge.state();
       case '/api/nomi-key':
         if (bridge.running || apiDriver.inFlight) throw Error('Stop the bridge first.');
@@ -193,6 +205,7 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
       case '/api/api-config': return apiDriver.configured();
       case '/api/api-catalog': return apiDriver.catalog();
       case '/api/api-checkpoint': return apiDriver.checkpointState(data.roomId);
+      case '/api/api-journal': return apiDriver.journalState(data.roomId);
       case '/api/api-abandon':
         if (apiDriver.inFlight || apiDriver.recoveryScheduled) throw Error('Stop and let the active API operation finish before abandoning.');
         return apiDriver.abandon(data.roomId);
@@ -221,7 +234,11 @@ chrome.alarms.onAlarm.addListener(async alarm => {
   if (alarm.name !== 'bridge-wake') return;
   const ids = await transaction(() => {
     apiDriver.touch(); bridge.tick();
-    return bridge.running ? bridge.pair.filter(id => /^\d+$/.test(String(id))) : [];
+    if(!bridge.running)return [];
+    const ids=bridge.pair.filter(id => /^\d+$/.test(String(id)));
+    const monitor=bridge.apiSession?.monitorEnabled && bridge.apiSession.monitorTabId;
+    if(bridge.mode==='api-room' && monitor && !ids.includes(monitor))ids.push(monitor);
+    return ids;
   });
   await Promise.allSettled(ids.map(id => chrome.tabs.sendMessage(Number(id), {type: 'wake'})));
 });
