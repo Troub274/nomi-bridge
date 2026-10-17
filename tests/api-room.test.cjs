@@ -6,7 +6,7 @@ const utils=require('../extension/api-room.js');
 globalThis.NomiApiRoom=utils;
 const {ApiRoomCheckpoint}=require('../extension/api-checkpoint.js');
 globalThis.ApiRoomCheckpoint=ApiRoomCheckpoint;
-const {WorldObserver,parseWorldCommand}=require('../extension/world-observer.js');
+const {WorldObserver,parseWorldCommand,completedLiveExchange}=require('../extension/world-observer.js');
 globalThis.WorldObserver=WorldObserver;
 globalThis.parseWorldCommand=parseWorldCommand;
 const {NomiApiDriver}=require('../extension/api-driver.js');
@@ -558,4 +558,82 @@ test('direct chat cannot accidentally forward World Engine control tags to Nomi'
   assert.equal(b.running,false);
   assert.equal(b.command,null);
   assert.match(b.reason,/control tag blocked/i);
+});
+
+test('catch-up returns ALL completed live messages since last listen; buffers trailing user',()=>{
+  const entries=[
+    {seq:101,channel:'live',speaker:'User',text:'First question'},
+    {seq:102,channel:'live',speaker:'Nomi',text:'First answer'},
+    {seq:103,channel:'live',speaker:'User',text:'Second question'},
+    {seq:104,channel:'live',speaker:'Nomi',text:'Second answer'},
+    {seq:105,channel:'live',speaker:'User',text:'Third question awaiting Nomi'}
+  ];
+  const round=completedLiveExchange(entries,100);
+  assert.deepEqual(round.events.map(e=>e.seq),[101,102,103,104]);
+  assert.equal(round.cursor,104);
+  assert.equal(round.remaining,1);
+  const single=completedLiveExchange(entries,104);
+  assert.deepEqual(single.events,[]);
+  const full=completedLiveExchange([...entries,{seq:106,channel:'live',speaker:'Nomi',text:'Third answer'}],104);
+  assert.deepEqual(full.events.map(e=>e.seq),[105,106]);
+});
+
+test('catch-up only counts a User-to-Nomi round trip, never just a User or Nomi message',()=>{
+  assert.equal(completedLiveExchange([{seq:2,channel:'live',speaker:'User',text:'Question'}],1).events.length,0);
+  assert.equal(completedLiveExchange([{seq:2,channel:'live',speaker:'Nomi',text:'Unsolicited'}],1).events.length,0);
+  assert.equal(completedLiveExchange([
+    {seq:2,channel:'live',speaker:'Nomi',text:'Old'},
+    {seq:3,channel:'live',speaker:'User',text:'New question'},
+    {seq:4,channel:'live',speaker:'Nomi',text:'New answer'}],1).cursor,4);
+});
+
+test('catch-up pages at complete Nomi turns without discarding earlier messages',()=>{
+  const entries=[];
+  for(let i=1;i<=8;i++)entries.push({seq:i,channel:'live',speaker:i%2?'User':'Nomi',text:'x'.repeat(1500)});
+  const first=completedLiveExchange(entries,0,7000);
+  assert.deepEqual(first.events.map(e=>e.seq),[1,2,3,4]);
+  assert.equal(first.truncated,true);
+  const second=completedLiveExchange(entries,first.cursor,7000);
+  assert.deepEqual(second.events.map(e=>e.seq),[5,6,7,8]);
+  assert.equal(second.truncated,false);
+});
+
+test('monitor sends every completed exchange since last listen, advances cursor only on GPT ack',async()=>{
+  const h=harness('[listening]'),s=h.b.apiSession;
+  s.monitorEnabled=true;s.monitorTabId='555';s.monitorLastSeq=0;
+  const url='https://nomi.ai/nomis/'+NOMI;
+  const messages=[
+    {speaker:'User',text:'Q one',key:'u1'},
+    {speaker:'Nomi',text:'A one',key:'n1'},
+    {speaker:'User',text:'Q two',key:'u2'},
+    {speaker:'Nomi',text:'A two',key:'n2'},
+    {speaker:'User',text:'Q three',key:'u3'}
+  ];
+  await h.driver.observeLive('555',{site:'nomi',url,liveMessages:messages});
+  let posts=0;h.driver.request=async()=>{posts++;throw Error('Nomi must not be called for listening');};
+  await h.driver.pump();await h.settle();
+  const response=h.b.tabs[virtual].reply;
+  assert.match(response,/Q one/);assert.match(response,/A one/);
+  assert.match(response,/Q two/);assert.match(response,/A two/);
+  assert.doesNotMatch(response,/Q three/,'unfinished user turn stays buffered');
+  assert.equal(s.monitorLastSeq,0,'not committed until GPT confirms editor delivery');
+  assert.equal(s.monitorPendingSeq,4);
+  await h.driver.forwarded(ROOM);
+  assert.equal(s.monitorLastSeq,4);
+  assert.equal(s.monitorPendingSeq,0);
+  assert.equal(posts,0);
+});
+
+test('non-destructive [tail] and [history] do not move the live-listening cursor',async()=>{
+  for(const command of ['[tail]','[history]']){
+    const h=harness(command),s=h.b.apiSession;
+    s.monitorEnabled=true;s.monitorTabId='555';s.monitorLastSeq=0;
+    await h.driver.observeLive('555',{site:'nomi',url:'https://nomi.ai/nomis/'+NOMI,
+      liveMessages:[{speaker:'User',text:'How are you?',key:'u'},{speaker:'Nomi',text:'Good.',key:'n'}]});
+    h.driver.request=async()=>{throw Error('No Nomi API POST expected');};
+    await h.driver.pump();await h.settle();
+    await h.driver.forwarded(ROOM);
+    assert.equal(s.monitorLastSeq,0,command);
+    assert.equal(s.monitorPendingSeq,0,command);
+  }
 });
