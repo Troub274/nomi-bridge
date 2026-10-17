@@ -599,8 +599,15 @@ class NomiApiDriver {
       b.heartbeat(selected,src.snapshot);
       const old=b.tabs[id]||{};
       const name=b.apiSession?.roomId===roomId?b.apiSession.nomiName:'Nomi';
+      const previous=b.apiSession?.roomId===roomId?b.apiSession:null;
+      const monitorEnabled=!!data.monitorLive;
       b.apiSession={roomId,nomiUuid:cp.nomiUuid,nomiName:name,roomName:'Recovered API room',
-        pendingReply:'uncertain',sequence:b.apiSession?.sequence||0};
+        pendingReply:'uncertain',sequence:previous?.sequence||0,
+        monitorEnabled,monitorTabId:monitorEnabled?String(data.monitorTab||''):'',
+        monitorUrl:monitorEnabled?(previous?.monitorUrl||''):'',
+        monitorSeen:0,monitorCount:0,monitorLastActivity:0,
+        monitorLastSeq:previous?.monitorLastSeq||0,
+        monitorIdleSeconds:Math.max(60,Math.min(3600,Number(data.monitorIdleSeconds)||300))};
       b.heartbeat(id,this.snapshot(roomId,name,old));
     });
     if(kind==='send') {
@@ -630,6 +637,28 @@ class NomiApiDriver {
         b.running=true; // Release reply request, then next GPT turn.
         b.startedWait=b.clock();
       });
+      // If the world content is complete and no reply was requested yet,
+      // recovering the live monitor is safe: don't manufacture a room reply
+      // merely because Edge restarted. Resume with fresh live observations.
+      const session=this.getBridge().apiSession;
+      if(cp.status==='awaiting_reply'&&session?.monitorEnabled&&session.monitorTabId){
+        try {
+          const monitor=await chrome.tabs.sendMessage(Number(session.monitorTabId),{type:'inspect'});
+          await this.observeLive(session.monitorTabId,monitor?.snapshot);
+        } catch(error) {
+          await this.transaction(()=>this.getBridge().log('Private-chat monitor not connected during recovery.'));
+        }
+      }
+      if(cp.status==='awaiting_reply'&&this.isLiveAvailable(session)){
+        const recent=(await this.observer.history(roomId)).filter(e=>e.channel==='live');
+        session.monitorLastSeq=recent.at(-1)?.seq||session.monitorLastSeq||0;
+        await this.transaction(()=>{
+          const state=this.getBridge();
+          state.apiSession.pendingReply='live_wait';
+          state.log('Recovered world content; waiting for NEW live conversation rather than requesting a room reply.');
+        });
+        return {recovered:true,monitoring:true,checkpoint:this.checkpoint.brief(cp)};
+      }
       const reply=cp.status==='reply_received'?cp.reply:await this.requestReply(cp);
       await this.completeReply(cp,reply,true);
       return {recovered:true,checkpoint:this.checkpoint.brief(cp)};
