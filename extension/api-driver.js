@@ -144,6 +144,7 @@ class NomiApiDriver {
     await this.request('/rooms/'+roomId,'DELETE');
     // Only erase the local checkpoint after the server acknowledged deletion.
     await chrome.storage.local.remove(this.checkpoint.key(roomId));
+    await this.observer.clear(roomId);
     const bridge=this.getBridge();
     if(bridge.apiSession?.roomId===roomId){
       bridge.apiSession=null;
@@ -218,6 +219,11 @@ class NomiApiDriver {
       const added=await this.observer.observeLive(s.roomId,snapshot.url,msgs);
       if(added.length)b.log('Observed '+added.length+' live private-chat message(s).');
     }
+  }
+  async clearJournal(roomId){
+    this.ensureRoomManagementIdle();
+    if(!NomiApiRoom.safeNomiId(roomId))throw Error('Choose a valid API room.');
+    await this.observer.clear(roomId);return {cleared:true};
   }
   async journalState(roomId){
     if(!NomiApiRoom.safeNomiId(roomId))throw Error('Choose a valid API room.');
