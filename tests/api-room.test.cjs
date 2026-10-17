@@ -468,12 +468,12 @@ test('a harmless ChatGPT reload in API mode retains session and ignores stale GP
   assert.equal(h.b.command,null);
 });
 
-test('inactive live monitor falls back to one reply for already sent world text',async()=>{
+test('when live chat is already inactive at send, request exactly one Nomi room reply',async()=>{
   const h=harness('[say room]\nThe rain has started.'),s=h.b.apiSession;
   s.monitorEnabled=true;s.monitorTabId='555';s.monitorIdleSeconds=300;
-  const url='https://nomi.ai/nomis/'+NOMI;
-  await h.driver.observeLive('555',{site:'nomi',url,liveMessages:[
-    {speaker:'User',text:'Morning!',key:'u1'}]});
+  await h.driver.observeLive('555',{site:'nomi',url:'https://nomi.ai/nomis/'+NOMI,
+    liveMessages:[{speaker:'User',text:'Morning!',key:'u1'}]});
+  s.monitorLastActivity=Date.now()-301000;
   let posts=0,replies=0;
   h.driver.request=async(path)=>{
     if(path.endsWith('/chat')){posts++;return {};}
@@ -481,47 +481,43 @@ test('inactive live monitor falls back to one reply for already sent world text'
     throw Error('Unexpected '+path);
   };
   await h.driver.pump();await h.settle();
-  assert.equal(posts,1);assert.equal(replies,0);
-  assert.equal(s.pendingReply,'live_wait');
-  s.monitorLastActivity=Date.now()-301000;
-  await h.driver.pump();await h.settle();
-  assert.equal(posts,1,'fallback never resends world message');
-  assert.equal(replies,1,'fallback requests precisely one room reply');
+  assert.equal(posts,1);
+  assert.equal(replies,1);
   assert.equal(h.b.tabs[virtual].reply,'It is raining.');
 });
 
-test('recovering an awaiting world event resumes live monitoring without requesting an API reply',async()=>{
+test('recovery after acknowledged world POST returns a GPT bridge ACK without Nomi room reply',async()=>{
   const h=harness('[say room]\nYou are warm after walking.'),s=h.b.apiSession;
   s.monitorEnabled=true;s.monitorTabId='555';
   const url='https://nomi.ai/nomis/'+NOMI;
   await h.driver.observeLive('555',{site:'nomi',url,liveMessages:[
-    {speaker:'User',text:'Hi Gwen',key:'u1'}
-  ]});
+    {speaker:'User',text:'Hi Gwen',key:'u1'}]});
   let roomSends=0,roomReplies=0;
   h.driver.request=async(path)=>{
     if(path.endsWith('/chat')){roomSends++;return {};}
     if(path.endsWith('/chat/request')){roomReplies++;return {replyMessage:{messageText:'Unwanted reply'}};}
     throw Error('unexpected '+path);
   };
+  // Simulate a worker interruption between confirmed POST and bridge ACK.
+  const realAck=h.driver.confirmWorldDelivery.bind(h.driver);
+  h.driver.confirmWorldDelivery=async()=>{};
   await h.driver.pump();await h.settle();
+  h.driver.confirmWorldDelivery=realAck;
   assert.equal((await h.cp.load(ROOM)).status,'awaiting_reply');
-  assert.equal(h.b.apiSession.pendingReply,'live_wait');
   h.b.stop();
   globalThis.chrome.tabs.sendMessage=async tabId=>Number(tabId)===555
     ?{snapshot:{site:'nomi',url,liveMessages:[
-      {speaker:'User',text:'Hi Gwen',key:'u1'},
-      {speaker:'Nomi',text:'I made myself lunch',key:'n2'}
-    ]}}
+      {speaker:'User',text:'Hi Gwen',key:'u1'}]}}
     :{snapshot:{...h.source}};
   const result=await h.driver.recover(ROOM,'reply',{
     nomiUuid:NOMI,chatgptTab:GPT_ID,monitorLive:true,monitorTab:'555',monitorIdleSeconds:300
   });
   assert.equal(result.monitoring,true);
-  assert.equal(h.b.apiSession.pendingReply,'live_wait');
+  assert.equal(result.worldAcknowledged,true);
+  assert.equal(h.b.apiSession.pendingReply,'delivering');
+  assert.match(h.b.tabs[virtual].reply,/DELIVERY CONFIRMED/);
   assert.equal(h.b.running,true);
   assert.equal(roomSends,1);
-  assert.equal(roomReplies,0,'recovery must not request a second Nomi turn in active live monitor mode');
-  await h.driver.pump();await h.settle();
   assert.equal(roomReplies,0);
 });
 
