@@ -95,7 +95,7 @@ class Bridge {
       return;
     }
     if (now - this.startedWait > 900 &&
-        !(this.mode === 'api-room' && this.apiSession?.pendingReply === 'protocol_hold')) {
+        !(this.mode === 'api-room' && ['protocol_hold','inflight','ready'].includes(this.apiSession?.pendingReply))) {
       this.stop('No completed reply for 15 minutes. Check the chat, then press Play to continue waiting.'); return;
     }
     const source = this.tabs[this.source];
