@@ -110,7 +110,7 @@ $('mode').onchange = () => {if (lastState) render(lastState);};
 function apiRoomOptions(desiredRoom = '') {
   const id = $('api-nomi').value;
   const old = desiredRoom || $('api-room').value;
-  const rooms = (apiCatalog?.rooms || []).filter(r => r.nomiUuids.includes(id));
+  const rooms = (apiCatalog?.rooms || []).filter(r => r.nomiUuids.length===1 && r.nomiUuids[0]===id);
   $('api-room').replaceChildren(new Option('Choose an API room…',''), ...rooms.map(r => new Option(r.name,r.uuid)));
   if (rooms.some(r=>r.uuid===old)) $('api-room').value=old;
   else if (rooms.length) $('api-room').value=rooms[0].uuid;
@@ -133,7 +133,7 @@ async function loadApi() {
     else if (apiCatalog.nomis.length) $('api-nomi').value=apiCatalog.nomis[0].uuid;
     apiRoomOptions(oldRoom);
     await loadCheckpoint();
-    $('api-status').textContent='Found '+apiCatalog.nomis.length+' Nomis and '+apiCatalog.rooms.length+' API rooms. Only rooms belonging to the selected Nomi are offered.';
+    $('api-status').textContent='Found '+apiCatalog.nomis.length+' Nomis and '+apiCatalog.rooms.length+' API rooms. Only single-Nomi rooms for the selected Nomi are offered.';
   } catch(error) { $('api-status').textContent=error.message; }
 }
 $('api-nomi').onchange=()=>{apiRoomOptions();void loadCheckpoint();};
