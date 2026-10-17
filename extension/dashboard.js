@@ -1,4 +1,4 @@
-const WORLD_OBSERVER_BUILD = 'live-fallback-r5';
+const WORLD_OBSERVER_BUILD = 'live-listener-r6';
 const versionLabel = document.getElementById('build-version');
 if (versionLabel) versionLabel.textContent = 'v' + chrome.runtime.getManifest().version + ' · ' + WORLD_OBSERVER_BUILD;
 const $ = id => document.getElementById(id);
@@ -359,9 +359,14 @@ $('copy-status').onclick = async () => {
       apiRoom: state.apiRoom && {nomiName:state.apiRoom.nomiName, effectiveMode:state.apiRoom.effectiveMode,
         monitorEnabled:state.apiRoom.monitorEnabled, monitorConnected:state.apiRoom.monitorConnected,
         monitorCount:state.apiRoom.monitorCount, monitorIdleSeconds:state.apiRoom.monitorIdleSeconds,
-        pendingReply:state.apiRoom.pendingReply, roomReplyRequests:state.apiRoom.roomReplyRequests},
+        pendingReply:state.apiRoom.pendingReply, listeningArmed:state.apiRoom.listeningArmed,
+        lastDeliveredSeq:state.apiRoom.lastDeliveredSeq,
+        pendingDeliverySeq:state.apiRoom.pendingDeliverySeq,
+        roomReplyRequests:state.apiRoom.roomReplyRequests},
+      selectedGPTTab:state.pair?.[0]||null, waitingOnTab:state.source||null,
       room: state.room && {autoChat:state.room.autoChat,userTurn:state.room.userTurn,memberCount:state.room.members.length}, running: state.running, phase: state.phase, reason: state.reason,
-      turns: state.turns, lastDelivery: state.lastDelivery, events: state.events, tabs: state.tabs.map(t => ({site:t.site, connected:t.connected, ready:t.ready,
+      turns: state.turns, lastDelivery: state.lastDelivery, events: state.events, tabs: state.tabs.map(t => ({id:t.id,site:t.site, selectedGPT:t.id===state.pair?.[0],
+        connected:t.connected, ready:t.ready,
         busy:t.busy, draft:t.draft, replyCharacters:t.reply?.length || 0, complete:t.complete, completion:t.completion, matches:t.matches, diagnostic:t.diagnostic}))};
     await navigator.clipboard.writeText(JSON.stringify(report, null, 2));
     $('copy-status').textContent = 'Copied — paste into our conversation';
