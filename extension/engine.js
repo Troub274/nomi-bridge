@@ -80,8 +80,21 @@ class Bridge {
     if (!this.running) return;
     const now = this.clock();
     if (this.pair.some(id => !this.tabs[id] || now - this.tabs[id].seen > 120)) {
-      if (this.command?.claimed) {this.phase = 'uncertain'; this.stop('A tab disconnected during Send. Check both chats, then Reset.');}
-      else this.stop('A chat tab disconnected or went to sleep. Reopen it, then press Play.');
+      if (this.command?.claimed) {
+        this.phase = 'uncertain';
+        this.stop('A tab disconnected during Send. Check both chats, then Reset.');
+      } else if(this.mode==='api-room') {
+        // Private-chat observations and GPT replies are read opportunistically.
+        // A background/sleeping tab must not kill the World Engine session:
+        // resume naturally after its next heartbeat. Never re-send a claimed
+        // command or override an uncertain delivery state.
+        if(this.command && !this.command.claimed){
+          this.command=null;
+          this.phase='reply';
+          this.baseline=this.tabs[this.source]?.replyKey||this.baseline;
+        }
+        this.reason='Waiting for a selected chat tab to reconnect. Play remains active; no Nomi API action attempted.';
+      } else this.stop('A chat tab disconnected or went to sleep. Reopen it, then press Play.');
       return;
     }
     if (this.phase === 'send') {
@@ -94,8 +107,10 @@ class Bridge {
       this.reason = 'Listening for private-chat activity. No Nomi API reply requested.';
       return;
     }
-    if (now - this.startedWait > 900 &&
-        !(this.mode === 'api-room' && ['protocol_hold','inflight','ready'].includes(this.apiSession?.pendingReply))) {
+    // The 15-minute idle watchdog belongs to browser chat relay modes.
+    // The World Engine may legitimately wait for GPT or a private exchange
+    // for hours. In API mode only in-flight sends use safety timeouts.
+    if (this.mode !== 'api-room' && now - this.startedWait > 900) {
       this.stop('No completed reply for 15 minutes. Check the chat, then press Play to continue waiting.'); return;
     }
     const source = this.tabs[this.source];
