@@ -57,10 +57,17 @@ class ApiRoomCheckpoint {
       throw Error('Cannot request reply before all content messages are confirmed.');
     return this.mark(cp,'reply_inflight','reply_attempt');
   }
-  async replyCommitted(cp) {
-    cp.text=null; // Once committed, purge the locally cached World Engine message.
+  async replyCommitted(cp,reply) {
+    // Commit the response before forwarding it to ChatGPT; a worker restart
+    // must not lose an accepted reply and trigger a duplicate reply request.
+    cp.reply=reply;
     cp.attemptedIndex=null;
-    return this.mark(cp,'completed','reply_committed');
+    return this.mark(cp,'reply_received','reply_committed');
+  }
+  async delivered(cp) {
+    if(cp.status!=='reply_received') throw Error('No committed reply is awaiting delivery.');
+    cp.text=null;cp.reply=null;
+    return this.mark(cp,'completed','reply_forwarded');
   }
   async recoverSend(cp,index) {
     if (!['send_uncertain','paused','planned','sending'].includes(cp.status))
@@ -76,7 +83,7 @@ class ApiRoomCheckpoint {
     return this.mark(cp,'planned');
   }
   async recoverReply(cp) {
-    if (!['reply_uncertain','reply_not_ready','awaiting_reply'].includes(cp.status))
+    if (!['reply_uncertain','reply_not_ready','awaiting_reply','reply_received'].includes(cp.status))
       throw Error('No unresolved reply request to recover.');
     this.event(cp,'reply_operator_override',{duplicateReplyPossible:cp.status==='reply_uncertain'});
     return this.mark(cp,'awaiting_reply');
