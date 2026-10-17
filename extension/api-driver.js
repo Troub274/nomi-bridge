@@ -115,8 +115,8 @@ class NomiApiDriver {
     const catalog=await this.catalog();
     const nomi=catalog.nomis.find(n=>n.uuid===data.nomiUuid);
     const room=catalog.rooms.find(r=>r.uuid===roomId);
-    if(!nomi||!room||!NomiApiRoom.roomHasNomi(room,nomi.uuid))
-      throw Error('Selected room does not contain the selected Nomi. Refresh the room list.');
+    if(!nomi||!room||room.nomiUuids.length!==1||room.nomiUuids[0]!==nomi.uuid)
+      throw Error('API Room mode requires a room containing exactly the selected Nomi and no other Nomis.');
     await this.waitForRoom(roomId);
     const old=b.apiSession?.roomId===roomId&&b.apiSession?.nomiUuid===nomi.uuid?b.apiSession:null;
     b.apiSession=old||{roomId,nomiUuid:nomi.uuid,nomiName:nomi.name,roomName:room.name,pendingReply:'none',sequence:0};
