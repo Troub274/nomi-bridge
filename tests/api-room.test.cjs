@@ -1189,58 +1189,103 @@ test('fresh GPT reply exits the post-delivery no-reply warning without automatic
   assert.equal(b.command?.text,'[listening]');
 });
 
-test('Nomi reply arriving after selected GPT navigation is saved for recovery and cannot be sent to wrong chat',async()=>{
+
+test('selected ChatGPT tab navigates briefly: keep Play running and auto-deliver saved Nomi reply on original URL',async()=>{
   const h=harness('[say room]\nA new breeze rattles the window.'),s=h.b.apiSession;
   s.monitorEnabled=false;
-  let roomPosts=0,roomReplies=0;
-  const originalUrl=h.source.url,newUrl='https://chatgpt.com/c/brand-new-conversation';
+  let posts=0,replies=0;
+  const wrongUrl='https://chatgpt.com/c/brand-new-conversation',originalUrl=h.source.url;
   h.driver.request=async path=>{
-    if(path.endsWith('/chat')){roomPosts++;return {};}
+    if(path.endsWith('/chat')){posts++;return {};}
     if(path.endsWith('/chat/request')){
-      roomReplies++;
-      // Nomi reply generation remains in progress when the selected GPT
-      // browser tab navigates to a DIFFERENT conversation.
-      h.b.heartbeat(GPT_ID,{...h.source,url:newUrl,document:'new-gpt-doc',
-        reply:'New conversation',replyKey:'fresh-thread'});
-      assert.equal(h.b.running,false);
-      assert.equal(h.b.phase,'uncertain');
-      assert.match(h.b.reason,/Selected ChatGPT conversation changed/);
+      replies++;
+      h.b.heartbeat(GPT_ID,{...h.source,url:wrongUrl,document:'wrong-gpt-doc',
+        reply:'Unrelated chat',replyKey:'unrelated'});
+      assert.equal(h.b.running,true,'one transient navigation must not stop Play');
+      assert.equal(h.b.tabRetry?.expectedUrl,originalUrl);
+      assert.match(h.b.reason,/Retrying original ChatGPT tab/);
       return {replyMessage:{messageText:'The window makes me feel uneasy.'}};
     }
-    throw Error('Unexpected Nomi request '+path);
+    throw Error('Unexpected request '+path);
   };
   await h.driver.pump();await h.settle();
-  const cp=await h.cp.load(ROOM);
-  assert.equal(roomPosts,1);
-  assert.equal(roomReplies,1);
-  assert.equal(cp.status,'reply_received','remote reply must survive even after GPT tab changed');
+  let cp=await h.cp.load(ROOM);
+  assert.equal(posts,1);assert.equal(replies,1);
+  assert.equal(cp.status,'reply_received');
   assert.equal(cp.reply,'The window makes me feel uneasy.');
   assert.equal(s.pendingReply,'reply_saved');
-  assert.equal(h.b.running,false);
-  assert.equal(h.b.phase,'uncertain');
-  assert.match(h.b.reason,/Selected ChatGPT conversation changed/,
-    'late Nomi reply must not overwrite the stop reason');
-  assert.notEqual(h.b.tabs[virtual].reply,'The window makes me feel uneasy.',
-    'never send reply to a new GPT conversation automatically');
-  assert.match(h.b.events.map(e=>e.text).join('\n'),/Nomi API reply was saved after the bridge stopped/);
-  await h.driver.pump();await h.settle();
-  assert.equal(roomReplies,1,'stopped bridge must not retry');
-  // Reopen the ORIGINAL conversation and use the UI's Recover Reply action.
-  globalThis.chrome.tabs.sendMessage=async()=>({snapshot:{...h.source,url:originalUrl,
-    document:'reopened-original-doc',replyKey:'original-gpt-key'}});
-  const recovered=await h.driver.recover(ROOM,'reply',{
-    nomiUuid:NOMI,chatgptTab:GPT_ID,monitorLive:false,monitorIdleSeconds:300
-  });
-  assert.equal(recovered.recovered,true);
   assert.equal(h.b.running,true);
-  assert.equal(h.b.source,virtual);
+  assert.equal(h.b.tabRetry?.expectedUrl,originalUrl);
+  assert.notEqual(h.b.tabs[virtual].reply,cp.reply,'cannot send to wrong GPT chat');
+  // Original GPT conversation becomes ready again in SAME selected browser tab.
+  h.b.heartbeat(GPT_ID,{...h.source,document:'restored-doc',replyKey:'restored-gpt'});
+  assert.equal(h.b.tabRetry,null);
+  await h.driver.pump();await h.settle();
+  cp=await h.cp.load(ROOM);
+  assert.equal(cp.status,'reply_received');
+  assert.equal(s.pendingReply,'delivering');
   assert.equal(h.b.tabs[virtual].reply,'The window makes me feel uneasy.');
-  assert.equal(roomPosts,1,'reply recovery never reposts world text');
-  assert.equal(roomReplies,1,'reply_received recovery never requests another Nomi response');
+  assert.equal(h.b.running,true);
+  assert.equal(posts,1,'no duplicate world POST');
+  assert.equal(replies,1,'no duplicate Nomi room reply request');
   await h.driver.forwarded(ROOM);
   assert.equal((await h.cp.load(ROOM)).status,'completed');
 });
 
+test('original GPT conversation never returns: bounded tab retry stops safely and saves late Nomi reply',async()=>{
+  const h=harness('[say room]\nA cup falls onto the floor.'),s=h.b.apiSession;
+  s.monitorEnabled=false;
+  const original=h.source.url,wrong='https://chatgpt.com/c/other';
+  let posts=0,replies=0;
+  h.driver.request=async path=>{
+    if(path.endsWith('/chat')){posts++;return {};}
+    if(path.endsWith('/chat/request')){
+      replies++;
+      h.b.heartbeat(GPT_ID,{...h.source,url:wrong,document:'wrong-doc'});
+      assert.equal(h.b.tabRetry?.expectedUrl,original);
+      // Simulate 120-second failed reconnect deadline while Nomi request
+      // remains in flight. The incoming answer still must be committed.
+      h.b.tabRetry.startedAt=h.b.clock()-121;
+      h.b.tick();
+      assert.equal(h.b.running,false);
+      assert.equal(h.b.phase,'uncertain');
+      assert.match(h.b.reason,/did not reconnect within 120 seconds/);
+      return {replyMessage:{messageText:'I heard the cup fall.'}};
+    }
+    throw Error('Unexpected request');
+  };
+  await h.driver.pump();await h.settle();
+  const cp=await h.cp.load(ROOM);
+  assert.equal(cp.status,'reply_received');
+  assert.equal(cp.reply,'I heard the cup fall.');
+  assert.equal(posts,1);assert.equal(replies,1);
+  assert.equal(s.pendingReply,'reply_saved');
+  assert.equal(h.b.running,false);
+  assert.match(h.b.reason,/did not reconnect/,'late answer cannot mask stop reason');
+  // Recovery after the original tab is restored uses only the saved answer.
+  globalThis.chrome.tabs.sendMessage=async()=>({snapshot:{...h.source,document:'back-again'}});
+  const result=await h.driver.recover(ROOM,'reply',{
+    nomiUuid:NOMI,chatgptTab:GPT_ID,monitorLive:false,monitorIdleSeconds:300
+  });
+  assert.equal(result.recovered,true);
+  assert.equal(h.b.tabs[virtual].reply,'I heard the cup fall.');
+  assert.equal(posts,1);assert.equal(replies,1);
+});
+
+test('tab retry refuses to interpret a wrong conversation snapshot as the intended ChatGPT tab',()=>{
+  const h=harness('[say room]\nThere is a river.'),b=h.b;
+  b.command=null;b.phase='reply';b.source=virtual;b.apiSession.pendingReply='inflight';
+  const original=h.source.url,wrong='https://chatgpt.com/c/different';
+  b.heartbeat(GPT_ID,{...h.source,url:wrong,document:'bad',ready:true});
+  assert.equal(b.tabRetry.expectedUrl,original);
+  b.heartbeat(GPT_ID,{...h.source,url:wrong,document:'bad2',ready:true});
+  assert.equal(b.tabRetry.expectedUrl,original);
+  b.heartbeat(GPT_ID,{...h.source,url:original,document:'restored',ready:false});
+  assert.ok(b.tabRetry,'correct URL without a ready editor must still retry');
+  b.heartbeat(GPT_ID,{...h.source,url:original,document:'restored',ready:true});
+  assert.equal(b.tabRetry,null);
+  assert.equal(b.running,true);
+});
 test('same-URL GPT reload during Nomi API reply in-flight is harmless and reply still reaches GPT',async()=>{
   const h=harness('[say room]\nA cool evening settles.'),s=h.b.apiSession;
   s.monitorEnabled=false;
