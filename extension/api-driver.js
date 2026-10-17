@@ -274,6 +274,11 @@ class NomiApiDriver {
     await this.checkpoint.save(cp);
   }
   async sendChunks(cp,{mustRun=false}={}) {
+    // Defense in depth, including explicit checkpoint recovery: NEVER send a
+    // control tag as messageText, even if a caller bypasses the normal parser.
+    const parsed=parseWorldCommand(cp.text);
+    if(parsed.kind!=='room'||parsed.text!==cp.text)
+      throw Error('Checkpoint text contains a bridge command, not a world message. No Nomi POST attempted.');
     const chunks=NomiApiRoom.apiChunks(cp.text);
     if(chunks.length!==cp.total)throw Error('Chunk plan mismatch; recovery blocked.');
     if(cp.attemptedIndex!==null)throw Error('Uncertain chunk requires operator authorization before sending.');
@@ -391,10 +396,27 @@ class NomiApiDriver {
   }
   async handleWorldControl(cmd,s) {
     const parsed=parseWorldCommand(cmd.text);
-    if(!['tail','history','listening','wait','chat'].includes(parsed.kind))return false;
+    if(!['tail','history','listening','wait','chat','invalid'].includes(parsed.kind))return false;
     const b=this.getBridge(),id=b.pair?.[1];
     const info=await chrome.tabs.sendMessage(Number(cmd.source),{type:'inspect'});
     if(!await this.transaction(()=>this.getBridge().validateSource(cmd.id,info?.snapshot)))return true;
+    if(parsed.kind==='invalid') {
+      // A malformed tag is never content. Consume the candidate without
+      // creating a checkpoint, calling Nomi, or issuing a synthetic GPT turn.
+      await this.transaction(()=>{
+        const bridge=this.getBridge();
+        if(!bridge.claim(id,cmd.id).allowed)return;
+        bridge.command=null;
+        bridge.phase='reply';
+        bridge.source=cmd.source;
+        bridge.baseline=cmd.sourceKey;
+        bridge.startedWait=bridge.clock();
+        bridge.apiSession.pendingReply='protocol_hold';
+        bridge.log('World Engine protocol error: '+parsed.reason+
+          ' Waiting for a corrected GPT reply. Nothing was sent to Nomi.');
+      });
+      return true;
+    }
     if(parsed.kind==='chat') {
       await this.transaction(()=>{
         const bridge=this.getBridge();
