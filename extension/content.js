@@ -110,8 +110,11 @@
       const input = one(config.input);
       const sends = nodes(config.send);
       const generating = nodes(config.busy).length > 0 || !!input?.disabled;
+      const observed = site === 'nomi' && !isRoom() ? liveConversationMessages() : [];
+      const liveMessages = generating && observed.at(-1)?.speaker === 'Nomi'
+        ? observed.slice(0,-1) : observed;
       return {
-        ...(isRoom() ? roomSnapshot() : site === 'nomi' ? {liveMessages:liveConversationMessages()} : {}),
+        ...(isRoom() ? roomSnapshot() : site === 'nomi' ? {liveMessages} : {}),
         site, title: document.title, url: location.href, document: documentId,
         reply: text, replyKey: `${replies.length}|${messageId}|${text}`,
         busy: generating, complete, completion,
