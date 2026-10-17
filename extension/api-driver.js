@@ -190,6 +190,7 @@ class NomiApiDriver {
     s.monitorLastSeq=s.monitorLastSeq||0;
     s.monitorPendingSeq=0;
     s.monitorWorldStartSeq=0;
+    s.listenDeadline=0;
     if(s.monitorEnabled&&s.monitorTabId){
       if(!/^\d+$/.test(s.monitorTabId))throw Error('Invalid Nomi private-chat tab ID.');
       const tab=await chrome.tabs.get(Number(s.monitorTabId));
@@ -474,14 +475,18 @@ class NomiApiDriver {
           (exchange.truncated?'\n[More completed messages are queued; send [listening] to retrieve the next batch.]':'');
         await this.publishObservation(s.roomId,report,exchange.cursor);
       }else {
-        // [wait] and [listening] are passive. No synthetic GPT response
-        // and no API reply request when live chat is unavailable.
+        // [wait] remains an indefinite silent subscription. [listening] is
+        // a bounded observation request: after 12 seconds without a complete
+        // exchange, return control to GPT without moving the journal cursor.
         await this.transaction(()=>{
           const bridge=this.getBridge();
-          if(bridge.apiSession?.roomId===s.roomId)bridge.apiSession.pendingReply='live_wait';
-          bridge.log(s.monitorEnabled
-            ? 'Listening for a complete User / Nomi exchange; user-only messages are buffered.'
-            : 'Waiting for new activity. Live chat monitoring is disabled; no API room reply requested.');
+          if(bridge.apiSession?.roomId===s.roomId){
+            bridge.apiSession.pendingReply='live_wait';
+            bridge.apiSession.listenDeadline=parsed.kind==='listening'?Date.now()+12000:0;
+          }
+          bridge.log(parsed.kind==='listening'
+            ? 'Checking for a complete User / Nomi exchange (up to 12 seconds). Unanswered messages remain buffered.'
+            : 'Waiting silently for a complete User / Nomi exchange; no Nomi API request.');
         });
       }
     }else await this.deliverObservations(s.roomId,parsed.kind,parsed.page||1);
@@ -564,6 +569,7 @@ class NomiApiDriver {
           const observation=this.observer.format(exchange.events,
             'EVERY COMPLETE USER / NOMI MESSAGE SINCE PREVIOUS LISTEN',28000)+
             (exchange.truncated?'\n[More completed messages are queued; send [listening] for the next batch.]':'');
+          s.listenDeadline=0;
           if(cp?.status==='awaiting_reply'){
             await this.checkpoint.replyCommitted(cp,observation);
             await this.completeReply(cp,observation,false,exchange.cursor);
@@ -571,6 +577,22 @@ class NomiApiDriver {
             await this.publishObservation(s.roomId,observation,exchange.cursor);
           }
         } catch(error){await this.fail('Live observation delivery halted: '+error.message);}
+        finally{this.inFlight=false;queueMicrotask(()=>void this.pump());}
+      } else if(!cp && s.listenDeadline && Date.now()>=s.listenDeadline){
+        // A bounded [listening] poll expired. It is NOT a Nomi message and
+        // MUST NOT acknowledge, skip or consume the incomplete exchange.
+        this.inFlight=true;
+        try {
+          const recent=await this.observer.history(s.roomId);
+          const unpaired=recent.filter(e=>e.channel==='live'&&e.seq>(s.monitorLastSeq||0));
+          await this.publishObservation(s.roomId,
+            'LISTEN CHECK COMPLETE — INTERNAL BRIDGE STATUS, NOT NOMI.\n'+
+            'No new complete User / Nomi round trip was observed in the last 12 seconds.\n'+
+            (unpaired.length?'There are '+unpaired.length+' unacknowledged live message(s); the current incomplete exchange is still buffered.\n':'No newer private-chat messages have been observed.\n')+
+            'No Nomi API request was made, and no private-chat messages were discarded.\n'+
+            'You may send [listening] again for the next completed exchange or [say room] to advance the world.');
+          s.listenDeadline=0;
+        } catch(error){await this.fail('Listen check halted: '+error.message);}
         finally{this.inFlight=false;queueMicrotask(()=>void this.pump());}
       } else if(cp?.status==='awaiting_reply'&&!this.isLiveAvailable(s)){
         // No new private-chat activity. Fall back to ONE Nomi room reply for
@@ -658,6 +680,7 @@ class NomiApiDriver {
         monitorLastSeq:previous?.monitorLastSeq||0,
         monitorPendingSeq:previous?.monitorPendingSeq||0,
         monitorWorldStartSeq:previous?.monitorWorldStartSeq||0,
+        listenDeadline:previous?.listenDeadline||0,
         monitorIdleSeconds:Math.max(60,Math.min(3600,Number(data.monitorIdleSeconds)||300))};
       b.heartbeat(id,this.snapshot(roomId,name,old));
     });
