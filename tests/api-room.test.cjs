@@ -1048,7 +1048,8 @@ test('30-second background wake delay does not falsely drop a recent live monito
   assert.equal(h.driver.isLiveAvailable(s),false,'monitor outage eventually falls back');
 });
 
-test('standing [listening] automatically forwards the next completed round trip without a second GPT command',async()=>{
+
+test('one-shot [listening] delivers one catch-up, then NEVER forwards new activity without another GPT command',async()=>{
   const h=harness('[listening]'),s=h.b.apiSession;
   s.monitorEnabled=true;s.monitorTabId='555';
   const url='https://nomi.ai/nomis/'+NOMI;
@@ -1057,115 +1058,89 @@ test('standing [listening] automatically forwards the next completed round trip 
     {speaker:'Nomi',text:'I am wondering about the weather.',key:'n1'}
   ];
   await h.driver.observeLive('555',{site:'nomi',url,liveMessages:first});
-  let apiPosts=0;h.driver.request=async()=>{apiPosts++;throw Error('No API POST expected');};
+  let posts=0;h.driver.request=async()=>{posts++;throw Error('Listening never posts to Nomi');};
   await h.driver.pump();await h.settle();
-  assert.equal(s.monitorStandingListen,true);
+  assert.equal(s.listenRequestPending,true,'one-shot remains pending until GPT confirms receipt');
   assert.match(h.b.tabs[virtual].reply,/wondering about the weather/);
   await h.driver.forwarded(ROOM);
-  assert.equal(s.monitorLastSeq,2);
-  assert.equal(s.monitorPendingSeq,0);
+  assert.equal(s.listenRequestPending,false,'ack completes this ONE request');
   assert.equal(s.pendingReply,'none');
-  // The first message has been sent to GPT; GPT has not yet sent
-  // another command, but the armed subscription stays active.
-  h.b.source=GPT_ID;h.b.phase='reply';
+  assert.equal(s.monitorLastSeq,2);
+  // GPT has not responded yet; recording the next exchange cannot trigger
+  // an unsolicited second catch-up.
+  h.b.phase='reply';h.b.source=GPT_ID;
   h.b.baseline=h.b.tabs[GPT_ID].replyKey;
-  h.b.startedWait=h.b.clock()-8;
-  const gptReply=h.b.tabs[GPT_ID].reply;
-  await h.driver.observeLive('555',{site:'nomi',url,liveMessages:[
-    ...first,{speaker:'User',text:'Would you like a drink?',key:'u2'}]});
-  await h.driver.pump();await h.settle();
-  assert.equal(h.b.source,GPT_ID,'incomplete question must not be delivered');
-  await h.driver.observeLive('555',{site:'nomi',url,liveMessages:[
+  h.b.startedWait=h.b.clock()-20;
+  const previous=h.b.tabs[virtual].reply;
+  const all=[
     ...first,{speaker:'User',text:'Would you like a drink?',key:'u2'},
-    {speaker:'Nomi',text:'Some water would be nice.',key:'n2'}]});
+    {speaker:'Nomi',text:'Some water would be nice.',key:'n2'}
+  ];
+  await h.driver.observeLive('555',{site:'nomi',url,liveMessages:all});
   await h.driver.pump();await h.settle();
-  assert.equal(h.b.source,virtual,'arm should hand off the new round trip');
+  assert.equal(h.b.source,GPT_ID);
+  assert.equal(h.b.tabs[virtual].reply,previous);
+  assert.equal(s.monitorLastSeq,2,'new events remain available to the next explicit listen');
+  assert.equal(s.monitorPendingSeq,0);
+  // GPT explicitly issues a second [listening] -> exactly the new exchange.
+  const prev=h.b.tabs[GPT_ID];
+  const next={...prev,reply:'[listening]',replyKey:'second-explicit-listening'};
+  h.b.heartbeat(GPT_ID,next);h.b.tabs[GPT_ID].changed=h.b.clock()-9;h.b.tick();
+  assert.equal(h.b.command?.text,'[listening]');
+  globalThis.chrome.tabs.sendMessage=async()=>({snapshot:{...next}});
+  await h.driver.pump();await h.settle();
   assert.match(h.b.tabs[virtual].reply,/Would you like a drink/);
   assert.match(h.b.tabs[virtual].reply,/Some water would be nice/);
-  assert.doesNotMatch(h.b.tabs[virtual].reply,/What are you thinking/,'previous round trip must not repeat');
-  assert.equal(h.b.tabs[GPT_ID].reply,gptReply,'no fabricated GPT response');
-  assert.equal(s.monitorLastSeq,2,'cursor stays until GPT accepts');
+  assert.doesNotMatch(h.b.tabs[virtual].reply,/What are you thinking/,'old exchange not repeated');
   assert.equal(s.monitorPendingSeq,4);
-  await h.driver.forwarded(ROOM);
-  assert.equal(s.monitorLastSeq,4);
-  assert.equal(s.pendingReply,'none');
-  assert.equal(apiPosts,0);
+  assert.equal(posts,0);
 });
 
-test('standing listener does not send while GPT is generating or has a draft or a newer response',async()=>{
-  for(const obstruction of ['busy','draft','new_reply']){
-    const h=harness('[listening]'),s=h.b.apiSession;
-    s.monitorEnabled=true;s.monitorTabId='555';
-    await h.driver.pump();await h.settle();
-    // An initial room-only status may have been generated. A full new
-    // exchange is now ready but can be delivered only to idle GPT.
-    const url='https://nomi.ai/nomis/'+NOMI;
-    await h.driver.observeLive('555',{site:'nomi',url,liveMessages:[
-      {speaker:'User',text:'What time is it?',key:'u1'},
-      {speaker:'Nomi',text:'Late afternoon.',key:'n1'}]});
-    s.monitorPendingSeq=0;
-    h.b.phase='reply';h.b.source=GPT_ID;
-    h.b.baseline=h.b.tabs[GPT_ID].replyKey;h.b.startedWait=h.b.clock()-8;
-    if(obstruction==='busy')h.b.tabs[GPT_ID].busy=true;
-    if(obstruction==='draft')h.b.tabs[GPT_ID].draft=true;
-    if(obstruction==='new_reply')h.b.baseline='previous-key';
-    await h.driver.pump();await h.settle();
-    assert.equal(h.b.source,GPT_ID,obstruction);
-  }
-});
-
-test('a later [say room] disables standing live subscription so world event takes priority',async()=>{
+test('one-shot [listening] waits for a complete round trip and returns one reply when Test answers',async()=>{
   const h=harness('[listening]'),s=h.b.apiSession;
   s.monitorEnabled=true;s.monitorTabId='555';
+  const url='https://nomi.ai/nomis/'+NOMI;
+  const question={speaker:'User',text:'Please tell me your plans.',key:'u1'};
+  await h.driver.observeLive('555',{site:'nomi',url,liveMessages:[question]});
+  let calls=0;h.driver.request=async()=>{calls++;throw Error('Listening never calls Nomi API');};
   await h.driver.pump();await h.settle();
-  assert.equal(s.monitorStandingListen,true);
-  const prev=h.b.tabs[GPT_ID];
-  h.b.source=GPT_ID;h.b.phase='reply';h.b.baseline=prev.replyKey;h.b.startedWait=h.b.clock();
-  const next={...prev,reply:'[say room]\nA sudden breeze moves the curtains.',replyKey:'new-world-command'};
-  h.b.heartbeat(GPT_ID,next);h.b.tabs[GPT_ID].changed=h.b.clock()-9;h.b.tick();
-  assert.equal(h.b.command?.text,next.reply);
-  globalThis.chrome.tabs.sendMessage=async()=>({snapshot:{...next}});
-  let sends=0;
-  h.driver.request=async path=>{
-    if(path.endsWith('/chat')){sends++;return {};}
-    if(path.endsWith('/chat/request'))return {replyMessage:{messageText:'The curtains flutter.'}};
-    throw Error('unexpected');
-  };
+  assert.equal(s.listenRequestPending,true);
+  assert.equal(s.pendingReply,'live_wait');
+  assert.ok(s.listenDeadline>Date.now());
+  assert.equal(h.b.tabs[virtual].reply,'','do not reply with only a User message');
+  await h.driver.observeLive('555',{site:'nomi',url,liveMessages:[
+    question,{speaker:'Nomi',text:'I will make tea.',key:'n1'}]});
   await h.driver.pump();await h.settle();
-  assert.equal(s.monitorStandingListen,false);
-  assert.equal(sends,1);
+  assert.match(h.b.tabs[virtual].reply,/Please tell me your plans/);
+  assert.match(h.b.tabs[virtual].reply,/I will make tea/);
+  assert.equal(s.monitorPendingSeq,2);
+  await h.driver.forwarded(ROOM);
+  assert.equal(s.listenRequestPending,false);
+  assert.equal(s.monitorLastSeq,2);
+  assert.equal(calls,0);
 });
 
-test('20-minute idle after a [listening] check does not strand later private-chat round trips',async()=>{
+test('one-shot [listening] timeout confirms a status to GPT and does not subscribe afterward',async()=>{
   const h=harness('[listening]'),s=h.b.apiSession;
-  s.monitorEnabled=true;s.monitorTabId='555';s.monitorLastSeq=0;
+  s.monitorEnabled=true;s.monitorTabId='555';
   const url='https://nomi.ai/nomis/'+NOMI;
-  const question={speaker:'User',text:'Question before long pause',key:'u1'};
+  const question={speaker:'User',text:'Are you there?',key:'u1'};
   await h.driver.observeLive('555',{site:'nomi',url,liveMessages:[question]});
-  let apiCalls=0;
-  h.driver.request=async()=>{apiCalls++;throw Error('Listening must never call Nomi API');};
+  h.driver.request=async()=>{throw Error('No Nomi API request');};
   await h.driver.pump();await h.settle();
-  assert.equal(s.pendingReply,'live_wait');
-  assert.equal(s.monitorStandingListen,true);
+  assert.equal(s.listenRequestPending,true);
   s.listenDeadline=Date.now()-1;
   await h.driver.pump();await h.settle();
   assert.match(h.b.tabs[virtual].reply,/LISTEN CHECK COMPLETE/);
   await h.driver.forwarded(ROOM);
-  assert.equal(s.pendingReply,'none');
-  assert.equal(s.monitorStandingListen,true);
-  h.b.source=GPT_ID;h.b.phase='reply';
-  h.b.baseline=h.b.tabs[GPT_ID].replyKey;
-  h.b.startedWait=h.b.clock()-1200;
-  h.b.tick();
-  assert.equal(h.b.running,true,'idle World Engine does not stop after 20 minutes');
+  assert.equal(s.listenRequestPending,false);
+  assert.equal(s.monitorLastSeq||0,0);
+  h.b.source=GPT_ID;h.b.phase='reply';h.b.baseline=h.b.tabs[GPT_ID].replyKey;
+  h.b.startedWait=h.b.clock()-20;
+  const previous=h.b.tabs[virtual].reply;
   await h.driver.observeLive('555',{site:'nomi',url,liveMessages:[
-    question,{speaker:'Nomi',text:'I am back and ready to talk.',key:'n1'}
-  ]});
+    question,{speaker:'Nomi',text:'Yes, I am here.',key:'n1'}]});
   await h.driver.pump();await h.settle();
-  assert.equal(h.b.source,virtual);
-  assert.match(h.b.tabs[virtual].reply,/Question before long pause/);
-  assert.match(h.b.tabs[virtual].reply,/I am back and ready to talk/);
-  assert.equal(s.monitorLastSeq,0);
-  assert.equal(s.monitorPendingSeq,2);
-  assert.equal(apiCalls,0);
+  assert.equal(h.b.tabs[virtual].reply,previous,'no unsolicited late reply after one-shot timed out');
+  assert.equal(s.monitorLastSeq||0,0,'late answer survives for next explicit listen');
 });
