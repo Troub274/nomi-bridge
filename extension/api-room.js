@@ -12,27 +12,28 @@ function roomHasNomi(room, nomiUuid) {
 function apiChunks(text, limit = NOMI_API_CHUNK_BYTES) {
   if (typeof text !== 'string' || !text.length) return [];
   if (!Number.isInteger(limit) || limit < 4) throw Error('Invalid UTF-8 chunk budget.');
-  const encoder = new TextEncoder(), output = [];
-  let start = 0;
-  while (start < text.length) {
-    let end = start, bytes = 0;
-    for (const symbol of text.slice(start)) {
-      const n = encoder.encode(symbol).length;
-      if (bytes + n > limit) break;
-      bytes += n;
-      end += symbol.length; // Keeps UTF-16 surrogate pairs intact.
+  const encoder = new TextEncoder(), chunks = [];
+  let buffer = '', bytes = 0;
+  for (const symbol of text) {
+    const size = encoder.encode(symbol).length;
+    if (size > limit) throw Error('Character exceeds API message budget.');
+    if (buffer && bytes + size > limit) {
+      const boundary = Math.max(buffer.lastIndexOf('\n'),buffer.lastIndexOf(' '));
+      // Preserve every character, preferring a nearby word or paragraph break.
+      if (boundary >= Math.floor(buffer.length * .75)) {
+        chunks.push(buffer.slice(0,boundary+1));
+        buffer = buffer.slice(boundary+1);
+        bytes = encoder.encode(buffer).length;
+      } else {
+        chunks.push(buffer);
+        buffer = ''; bytes = 0;
+      }
     }
-    if (end === start) throw Error('Character exceeds API message budget.');
-    if (end < text.length) {
-      const section = text.slice(start,end);
-      const boundary = Math.max(section.lastIndexOf('\n'),section.lastIndexOf(' '));
-      // Prefer intact sentences/words, but never create very short chunks.
-      if (boundary >= Math.floor(section.length * .75)) end = start + boundary + 1;
-    }
-    output.push(text.slice(start,end));
-    start = end;
+    buffer += symbol;
+    bytes += size;
   }
-  return output;
+  if (buffer) chunks.push(buffer);
+  return chunks;
 }
 function nomiReplyText(payload) {
   const message = payload?.replyMessage;
