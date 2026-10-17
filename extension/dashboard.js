@@ -1,4 +1,4 @@
-const WORLD_OBSERVER_BUILD = 'live-listener-r6';
+const WORLD_OBSERVER_BUILD = 'one-shot-listen-r7';
 const versionLabel = document.getElementById('build-version');
 if (versionLabel) versionLabel.textContent = 'v' + chrome.runtime.getManifest().version + ' · ' + WORLD_OBSERVER_BUILD;
 const $ = id => document.getElementById(id);
@@ -359,7 +359,7 @@ $('copy-status').onclick = async () => {
       apiRoom: state.apiRoom && {nomiName:state.apiRoom.nomiName, effectiveMode:state.apiRoom.effectiveMode,
         monitorEnabled:state.apiRoom.monitorEnabled, monitorConnected:state.apiRoom.monitorConnected,
         monitorCount:state.apiRoom.monitorCount, monitorIdleSeconds:state.apiRoom.monitorIdleSeconds,
-        pendingReply:state.apiRoom.pendingReply, listeningArmed:state.apiRoom.listeningArmed,
+        pendingReply:state.apiRoom.pendingReply, listenRequestPending:state.apiRoom.listenRequestPending,
         lastDeliveredSeq:state.apiRoom.lastDeliveredSeq,
         pendingDeliverySeq:state.apiRoom.pendingDeliverySeq,
         roomReplyRequests:state.apiRoom.roomReplyRequests},
