@@ -69,6 +69,38 @@
     return {last, text, complete: completedControl && !streaming,
       completion: streaming ? 'ChatGPT response is streaming' : completedControl ? 'Completed response controls detected' : 'Waiting for ChatGPT completed-response controls'};
   }
+  // Read-only view of the private Nomi conversation, including USER messages.
+  // This is not a send hook. Unknown/ambiguous speakers are deliberately omitted.
+  function liveConversationMessages() {
+    if (site !== 'nomi' || isRoom()) return [];
+    const selector=[
+      '[class*="MessageBubble_nomiContent__"]',
+      '[class*="MessageBubble_userContent__"]',
+      '[class*="MessageBubble_humanContent__"]'
+    ].join(', ');
+    const occurrences = new Map();
+    const messages=[];
+    const fingerprint = value => {
+      let hash=2166136261;
+      for(let i=0;i<value.length;i++)hash=Math.imul(hash^value.charCodeAt(i),16777619)>>>0;
+      return hash.toString(16)+'-'+value.length;
+    };
+    for(const node of nodes(selector)){
+      const cls=String(node.className||'');
+      const speaker=cls.includes('MessageBubble_nomiContent__')?'Nomi':
+        /MessageBubble_(user|human)Content__/.test(cls)?'User':null;
+      if(!speaker)continue;
+      const text=read(node);
+      if(!text)continue;
+      const wrapper=node.closest('[data-message-id],[class*="MessageBubble_wrapper__"],[class*="MessageBubble_messageWrapper__"]');
+      const id=node.getAttribute('data-message-id')||wrapper?.getAttribute('data-message-id')||'';
+      const keyBase=JSON.stringify([speaker,fingerprint(text)]);
+      const occurrence=(occurrences.get(keyBase)||0)+1;
+      occurrences.set(keyBase,occurrence);
+      messages.push({speaker,text,key:id||keyBase+'|'+occurrence});
+    }
+    return messages.slice(-50);
+  }
   function snapshot() {
     try {
       const config = selectors();
@@ -79,7 +111,7 @@
       const sends = nodes(config.send);
       const generating = nodes(config.busy).length > 0 || !!input?.disabled;
       return {
-        ...(isRoom() ? roomSnapshot() : {}),
+        ...(isRoom() ? roomSnapshot() : site === 'nomi' ? {liveMessages:liveConversationMessages()} : {}),
         site, title: document.title, url: location.href, document: documentId,
         reply: text, replyKey: `${replies.length}|${messageId}|${text}`,
         busy: generating, complete, completion,
