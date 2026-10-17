@@ -124,7 +124,16 @@ test('operator-authorized send recovery never repeats earlier confirmed chunks',
 test('explicit NoReply retries reply request with exponential backoff, not World Engine content',async()=>{
   const h=harness('Hello Gwen.'),sent=[],delays=[];
   let replies=0;
-  h.driver.delay=async ms=>delays.push(ms);
+  h.driver.delay=async ms=>{
+    delays.push(ms);
+    const s=h.b.apiSession;
+    assert.equal(s.replyLastErrorType,'RoomNomiNotReadyForMessage');
+    assert.equal(s.replyLastHttpStatus,400);
+    assert.equal(s.replyNextRetrySeconds,ms/1000);
+    h.b.tick();
+    assert.match(h.b.reason,/Nomi API room reply pending/);
+    assert.match(h.b.reason,/World text was already delivered/);
+  };
   h.driver.request=async(path,method='GET',body)=>{
     if(path.endsWith('/chat')){sent.push(body.messageText);return {};}
     if(path.endsWith('/chat/request')){
@@ -138,6 +147,11 @@ test('explicit NoReply retries reply request with exponential backoff, not World
   assert.equal(sent.length,1);
   assert.equal(replies,4);
   assert.deepEqual(delays,[1000,2000,4000]);
+  assert.equal(h.b.apiSession.replyAttemptsInTurn,4);
+  assert.equal(h.b.apiSession.replyLastErrorType,null);
+  assert.equal(h.b.apiSession.replyNextRetrySeconds,null);
+  assert.match(h.b.events.map(e=>e.text).join('\n'),/Nomi API RoomNomiNotReadyForMessage \(HTTP 400\) after reply attempt 3/);
+  assert.match(h.b.events.map(e=>e.text).join('\n'),/World text was NOT resent/);
   assert.equal((await h.cp.load(ROOM)).status,'reply_received');
 });
 test('reply request with ambiguous outcome cannot be retried without operator consent',async()=>{
