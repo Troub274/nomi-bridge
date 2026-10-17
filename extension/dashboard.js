@@ -1,4 +1,4 @@
-const WORLD_OBSERVER_BUILD = 'late-reply-recovery-r10';
+const WORLD_OBSERVER_BUILD = 'tab-retry-r11';
 const versionLabel = document.getElementById('build-version');
 if (versionLabel) versionLabel.textContent = 'v' + chrome.runtime.getManifest().version + ' · ' + WORLD_OBSERVER_BUILD;
 const $ = id => document.getElementById(id);
@@ -369,6 +369,7 @@ $('copy-status').onclick = async () => {
         replyNextRetrySeconds:state.apiRoom.replyNextRetrySeconds,
         replyWaitStartedAt:state.apiRoom.replyWaitStartedAt},
       selectedGPTTab:state.pair?.[0]||null, waitingOnTab:state.source||null,
+      tabRetry:state.tabRetry||null,
       room: state.room && {autoChat:state.room.autoChat,userTurn:state.room.userTurn,memberCount:state.room.members.length}, running: state.running, phase: state.phase, reason: state.reason,
       turns: state.turns, lastDelivery: state.lastDelivery, events: state.events, tabs: state.tabs.map(t => ({id:t.id,site:t.site, selectedGPT:t.id===state.pair?.[0],
         connected:t.connected, ready:t.ready,
