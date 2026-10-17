@@ -347,7 +347,7 @@ class NomiApiDriver {
       }
     }
   }
-  async completeReply(cp,reply,startedFromRecovery=false,liveCursor=0) {
+  async completeReply(cp,reply,startedFromRecovery=false,liveCursor=0,kind='room-reply') {
     await this.transaction(()=>{
       const b=this.getBridge(),s=b.apiSession;
       if(b.mode!=='api-room'||s?.roomId!==cp.roomId)return;
@@ -363,8 +363,23 @@ class NomiApiDriver {
         b.baseline=prior.replyKey||'';b.startedWait=b.clock();
         b.running=true;
       }
-      b.log('Nomi replied in API room.');
+      b.log(kind==='world-ack'?'World event delivered; acknowledging to GPT without requesting a Nomi room reply.':'Nomi replied in API room.');
     });
+  }
+  worldDeliveryAck(cp){
+    return 'WORLD ENGINE DELIVERY CONFIRMED — internal bridge acknowledgement, NOT a Nomi message.\n'+
+      'World event posted successfully to the API room ('+cp.total+' chunk'+
+      (cp.total===1?'':'s')+'). No Nomi room response was requested.\n'+
+      'Private conversation monitoring continues. This acknowledgement does not consume any live-chat history.\n'+
+      'Choose [listening] to wait for and receive every complete User / Nomi exchange since the previous listen, '+
+      'or issue a new [say room] world event when appropriate.';
+  }
+  async confirmWorldDelivery(cp,startedFromRecovery=false){
+    if(cp.status!=='awaiting_reply')
+      throw Error('Cannot acknowledge a world event before all API room chunks are confirmed.');
+    const ack=this.worldDeliveryAck(cp);
+    await this.checkpoint.replyCommitted(cp,ack);
+    await this.completeReply(cp,ack,startedFromRecovery,0,'world-ack');
   }
   async publishObservation(roomId,text,liveCursor=0){
     const b=this.getBridge(),s=b.apiSession;
@@ -562,16 +577,11 @@ class NomiApiDriver {
         if(!cp||cp.status!=='awaiting_reply')throw Error('Missing confirmed content checkpoint; refusing reply request.');
         await this.transaction(()=>{this.getBridge().apiSession.pendingReply='inflight';});
         if(this.isLiveAvailable(s)){
-          // Do not manufacture a reply by replaying already-seen conversation.
-          // The checkpoint remains safely awaiting_reply until new live
-          // activity or a fallback Nomi API reply resolves it.
-          await this.transaction(()=>{
-            const state=this.getBridge();
-            if(state.apiSession?.roomId===s.roomId){
-              state.apiSession.pendingReply='live_wait';
-              state.log('World event sent. Waiting for NEW private-chat activity; no room reply requested.');
-            }
-          });
+          // The world event was successfully posted. Return a one-time
+          // bridge delivery ACK to GPT NOW so GPT can choose [listening].
+          // Do not wait for a private chat reply before releasing GPT.
+          // Do not consume/advance the private-chat observation cursor.
+          await this.confirmWorldDelivery(cp);
         }else {
           const reply=await this.requestReply(cp);
           await this.observer.roomEvent(s.roomId,'Nomi',reply,'nomi-reply-'+cp.turnId);
@@ -669,12 +679,8 @@ class NomiApiDriver {
         }
       }
       if(cp.status==='awaiting_reply'&&this.isLiveAvailable(session)){
-        await this.transaction(()=>{
-          const state=this.getBridge();
-          state.apiSession.pendingReply='live_wait';
-          state.log('Recovered world content; waiting for NEW live conversation rather than requesting a room reply.');
-        });
-        return {recovered:true,monitoring:true,checkpoint:this.checkpoint.brief(cp)};
+        await this.confirmWorldDelivery(cp,true);
+        return {recovered:true,monitoring:true,worldAcknowledged:true,checkpoint:this.checkpoint.brief(cp)};
       }
       const reply=cp.status==='reply_received'?cp.reply:await this.requestReply(cp);
       await this.completeReply(cp,reply,true);
