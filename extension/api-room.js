@@ -1,6 +1,6 @@
 /* Nomi API room helpers. This module never stores or prints API credentials. */
 const NOMI_API_BASE = 'https://api.nomi.ai/v1';
-const NOMI_API_CHUNK_BYTES = 750;
+const NOMI_API_CHUNK_BYTES = 800;
 
 function apiRoomId(roomUuid) { return 'api:room:' + roomUuid; }
 function apiRoomUuid(id) {return String(id || '').startsWith('api:room:') ? String(id).slice(9) : '';}
