@@ -632,7 +632,7 @@ class NomiApiDriver {
         pendingReply:'uncertain',sequence:previous?.sequence||0,
         monitorEnabled,monitorTabId:monitorEnabled?String(data.monitorTab||''):'',
         monitorUrl:monitorEnabled?(previous?.monitorUrl||''):'',
-        monitorSeen:0,monitorCount:0,monitorLastActivity:0,
+        monitorSeen:0,monitorCount:0,monitorLastActivity:previous?.monitorLastActivity||0,
         monitorLastSeq:previous?.monitorLastSeq||0,
         monitorPendingSeq:previous?.monitorPendingSeq||0,
         monitorWorldStartSeq:previous?.monitorWorldStartSeq||0,
