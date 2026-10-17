@@ -58,7 +58,19 @@ class Bridge {
     const changed = !old || old.replyKey !== snapshot.replyKey || old.reply !== snapshot.reply || old.busy !== snapshot.busy || old.complete !== snapshot.complete || old.roomKey !== snapshot.roomKey || old.autoChat !== snapshot.autoChat || old.userTurn !== snapshot.userTurn;
     this.tabs[id] = {...snapshot, id, seen: this.clock(), changed: changed ? this.clock() : old.changed};
     if (this.pair?.includes(id) && this.phase !== 'idle' && old && (old.url !== snapshot.url || old.document !== snapshot.document)) {
-      this.phase = 'uncertain'; this.stop('A selected chat reloaded or navigated. Check both chats, then Reset.');
+      // A harmless reload in API mode is NOT an uncertain Nomi API POST.
+      // Never re-use the previous GPT answer after the page reload.
+      if (this.mode === 'api-room' && old.url === snapshot.url && this.phase !== 'send') {
+        if (this.source === id) {
+          this.phase = 'reply';
+          this.baseline = snapshot.replyKey;
+          this.startedWait = this.clock();
+        }
+        this.log('Chat tab reloaded; retaining the API room and waiting for new complete activity.');
+      } else {
+        this.phase = 'uncertain';
+        this.stop('Selected chat reloaded or navigated during a potentially active send. Inspect before Reset.');
+      }
     } else if (this.running && this.pair?.includes(id) && snapshot.error) this.stop(snapshot.error);
     this.tick();
     if (this.running && this.phase === 'send' && this.command?.target === id && !this.command.claimed) return {command: {...this.command}};
@@ -76,7 +88,16 @@ class Bridge {
       if (now - this.command.created > 90) {this.phase = 'uncertain'; this.stop('Send was not confirmed. Check both chats, then Reset. Nothing will be resent automatically.');}
       return;
     }
-    if (now - this.startedWait > 900) {this.stop('No completed reply for 15 minutes. Check the chat, then press Play to continue waiting.'); return;}
+    // Waiting for live activity may intentionally be indefinite; silence is
+    // not a reason to issue another Nomi API reply request or stop the bridge.
+    if (this.mode === 'api-room' && this.apiSession?.pendingReply === 'live_wait') {
+      this.reason = 'Listening for private-chat activity. No Nomi API reply requested.';
+      return;
+    }
+    if (now - this.startedWait > 900 &&
+        !(this.mode === 'api-room' && this.apiSession?.pendingReply === 'protocol_hold')) {
+      this.stop('No completed reply for 15 minutes. Check the chat, then press Play to continue waiting.'); return;
+    }
     const source = this.tabs[this.source];
     const speaker = ['nomi', 'api-room'].includes(source.site) ? 'Nomi' : 'ChatGPT';
     if (now - source.seen > 70) {this.reason = 'Waiting for ' + speaker + ' tab to reconnect.'; return;}
