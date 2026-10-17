@@ -944,3 +944,93 @@ test('legacy browser relay mode still stops on 15-minute timeout',()=>{
   assert.equal(b.running,false);
   assert.match(b.reason,/15 minutes/);
 });
+
+test('room-only fallback immediately returns an internal status for [listening] with no live monitor',async()=>{
+  const h=harness('[listening]'),s=h.b.apiSession;
+  s.monitorEnabled=true;s.monitorTabId='555';s.monitorSeen=0;s.monitorCount=0;
+  let apiCalls=0;
+  h.driver.request=async()=>{apiCalls++;throw Error('Passive listen cannot request Nomi room reply');};
+  await h.driver.pump();await h.settle();
+  assert.match(h.b.tabs[virtual].reply,/ROOM-ONLY FALLBACK ACTIVE/);
+  assert.match(h.b.tabs[virtual].reply,/Send \[say room\]/);
+  assert.equal(s.listenDeadline,0);
+  assert.equal(s.monitorLastSeq||0,0);
+  assert.equal(apiCalls,0);
+  assert.equal(h.b.running,true);
+  assert.equal(h.driver.publicState().effectiveMode,'room-only');
+});
+
+test('completed previous world checkpoint never suppresses a later [listening] timeout',async()=>{
+  const h=harness('[say room]\nThere is a cup on the table.'),s=h.b.apiSession;
+  s.monitorEnabled=true;s.monitorTabId='555';
+  const url='https://nomi.ai/nomis/'+NOMI;
+  await h.driver.observeLive('555',{site:'nomi',url,liveMessages:[
+    {speaker:'User',text:'Are you comfortable?',key:'u1'},
+    {speaker:'Nomi',text:'Yes.',key:'n1'}]});
+  let apiReplies=0;
+  h.driver.request=async path=>{
+    if(path.endsWith('/chat'))return {};
+    if(path.endsWith('/chat/request')){apiReplies++;return {replyMessage:{messageText:'Room reply'}};}
+    throw Error('Unexpected API');
+  };
+  await h.driver.pump();await h.settle();
+  assert.match(h.b.tabs[virtual].reply,/DELIVERY CONFIRMED/);
+  await h.driver.forwarded(ROOM);
+  assert.equal((await h.cp.load(ROOM)).status,'completed');
+  const prev=h.b.tabs[GPT_ID];
+  h.b.source=GPT_ID;h.b.phase='reply';h.b.baseline=prev.replyKey;h.b.startedWait=h.b.clock();
+  const next={...prev,reply:'[listening]',replyKey:'listen-after-world'};
+  h.b.heartbeat(GPT_ID,next);h.b.tabs[GPT_ID].changed=h.b.clock()-9;h.b.tick();
+  assert.equal(h.b.command?.text,'[listening]');
+  globalThis.chrome.tabs.sendMessage=async()=>({snapshot:{...next}});
+  s.monitorLastSeq=2; // prior conversation already acknowledged
+  await h.driver.pump();await h.settle();
+  assert.equal(s.pendingReply,'live_wait');
+  assert.ok(s.listenDeadline>Date.now());
+  s.listenDeadline=Date.now()-1;
+  await h.driver.pump();await h.settle();
+  assert.match(h.b.tabs[virtual].reply,/LISTEN CHECK COMPLETE/);
+  assert.equal(s.monitorLastSeq,2);
+  assert.equal(apiReplies,0);
+  assert.equal(h.b.running,true);
+});
+
+test('inactive monitor falls back to Nomi room API for next world event and automatically restores on new live chat',async()=>{
+  const h=harness('[say room]\nThe door creaks open.'),s=h.b.apiSession;
+  s.monitorEnabled=true;s.monitorTabId='555';s.monitorIdleSeconds=300;
+  const url='https://nomi.ai/nomis/'+NOMI;
+  await h.driver.observeLive('555',{site:'nomi',url,liveMessages:[
+    {speaker:'User',text:'Hello!',key:'u1'}]});
+  s.monitorLastActivity=Date.now()-310000;
+  assert.equal(h.driver.isLiveAvailable(s),false);
+  let post=0,replies=0;
+  h.driver.request=async path=>{
+    if(path.endsWith('/chat')){post++;return {};}
+    if(path.endsWith('/chat/request')){replies++;return {replyMessage:{messageText:'The door sounds old.'}};}
+    throw Error('Unexpected API request');
+  };
+  await h.driver.pump();await h.settle();
+  assert.equal(h.driver.publicState().effectiveMode,'room-only');
+  assert.equal(post,1);assert.equal(replies,1);
+  assert.equal(h.b.tabs[virtual].reply,'The door sounds old.');
+  assert.equal(h.b.running,true);
+  await h.driver.observeLive('555',{site:'nomi',url,liveMessages:[
+    {speaker:'User',text:'Hello!',key:'u1'},
+    {speaker:'Nomi',text:'Did you hear the door?',key:'n1'}]});
+  await h.driver.pump();await h.settle();
+  assert.equal(h.driver.publicState().effectiveMode,'live');
+  assert.equal(post,1,'monitor recovery never resends the world event');
+  assert.equal(replies,1,'monitor recovery never forces a second room reply');
+});
+
+test('[wait] remains silent while room-only fallback is active',async()=>{
+  const h=harness('[wait]'),s=h.b.apiSession;
+  s.monitorEnabled=true;s.monitorTabId='555';
+  let requests=0;h.driver.request=async()=>{requests++;throw Error('No Nomi room call expected');};
+  await h.driver.pump();await h.settle();
+  assert.equal(h.b.tabs[virtual].reply,'');
+  assert.equal(s.listenDeadline,0);
+  assert.equal(h.b.running,true);
+  assert.equal(requests,0);
+  assert.equal(h.driver.publicState().effectiveMode,'room-only');
+});
