@@ -3,7 +3,7 @@
  * DOM messages are deduplicated across extension worker restarts.
  */
 class WorldObserver {
-  constructor(storage=chrome.storage.local,maxEvents=100) {
+  constructor(storage=chrome.storage.local,maxEvents=500) {
     this.storage=storage;
     this.maxEvents=maxEvents;
   }
