@@ -523,6 +523,16 @@ class NomiApiDriver {
       // if the real conversation becomes inactive. Never replay old history
       // as if it were a new live message.
       const cp=await this.checkpoint.load(s.roomId);
+      if(cp?.status==='awaiting_reply'&&this.isLiveAvailable(s)){
+        // Upgrade an already-running 0.4.2 session that was stranded after
+        // a confirmed world POST under the old wait-for-private-chat rule.
+        // The world text was already posted: only ACK GPT, never resend it.
+        this.inFlight=true;
+        try {await this.confirmWorldDelivery(cp);}
+        catch(error){await this.fail('World delivery acknowledgement halted: '+error.message);}
+        finally {this.inFlight=false;queueMicrotask(()=>void this.pump());}
+        return;
+      }
       const exchange=s.monitorEnabled
         ? completedLiveExchange(await this.observer.history(s.roomId),s.monitorLastSeq||0)
         : {events:[],cursor:s.monitorLastSeq||0};
