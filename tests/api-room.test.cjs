@@ -1188,3 +1188,89 @@ test('fresh GPT reply exits the post-delivery no-reply warning without automatic
   assert.equal(b.running,true);
   assert.equal(b.command?.text,'[listening]');
 });
+
+test('Nomi reply arriving after selected GPT navigation is saved for recovery and cannot be sent to wrong chat',async()=>{
+  const h=harness('[say room]\nA new breeze rattles the window.'),s=h.b.apiSession;
+  s.monitorEnabled=false;
+  let roomPosts=0,roomReplies=0;
+  const originalUrl=h.source.url,newUrl='https://chatgpt.com/c/brand-new-conversation';
+  h.driver.request=async path=>{
+    if(path.endsWith('/chat')){roomPosts++;return {};}
+    if(path.endsWith('/chat/request')){
+      roomReplies++;
+      // Nomi reply generation remains in progress when the selected GPT
+      // browser tab navigates to a DIFFERENT conversation.
+      h.b.heartbeat(GPT_ID,{...h.source,url:newUrl,document:'new-gpt-doc',
+        reply:'New conversation',replyKey:'fresh-thread'});
+      assert.equal(h.b.running,false);
+      assert.equal(h.b.phase,'uncertain');
+      assert.match(h.b.reason,/Selected ChatGPT conversation changed/);
+      return {replyMessage:{messageText:'The window makes me feel uneasy.'}};
+    }
+    throw Error('Unexpected Nomi request '+path);
+  };
+  await h.driver.pump();await h.settle();
+  const cp=await h.cp.load(ROOM);
+  assert.equal(roomPosts,1);
+  assert.equal(roomReplies,1);
+  assert.equal(cp.status,'reply_received','remote reply must survive even after GPT tab changed');
+  assert.equal(cp.reply,'The window makes me feel uneasy.');
+  assert.equal(s.pendingReply,'reply_saved');
+  assert.equal(h.b.running,false);
+  assert.equal(h.b.phase,'uncertain');
+  assert.match(h.b.reason,/Selected ChatGPT conversation changed/,
+    'late Nomi reply must not overwrite the stop reason');
+  assert.notEqual(h.b.tabs[virtual].reply,'The window makes me feel uneasy.',
+    'never send reply to a new GPT conversation automatically');
+  assert.match(h.b.events.map(e=>e.text).join('\n'),/Nomi API reply was saved after the bridge stopped/);
+  await h.driver.pump();await h.settle();
+  assert.equal(roomReplies,1,'stopped bridge must not retry');
+  // Reopen the ORIGINAL conversation and use the UI's Recover Reply action.
+  globalThis.chrome.tabs.sendMessage=async()=>({snapshot:{...h.source,url:originalUrl,
+    document:'reopened-original-doc',replyKey:'original-gpt-key'}});
+  const recovered=await h.driver.recover(ROOM,'reply',{
+    nomiUuid:NOMI,chatgptTab:GPT_ID,monitorLive:false,monitorIdleSeconds:300
+  });
+  assert.equal(recovered.recovered,true);
+  assert.equal(h.b.running,true);
+  assert.equal(h.b.source,virtual);
+  assert.equal(h.b.tabs[virtual].reply,'The window makes me feel uneasy.');
+  assert.equal(roomPosts,1,'reply recovery never reposts world text');
+  assert.equal(roomReplies,1,'reply_received recovery never requests another Nomi response');
+  await h.driver.forwarded(ROOM);
+  assert.equal((await h.cp.load(ROOM)).status,'completed');
+});
+
+test('same-URL GPT reload during Nomi API reply in-flight is harmless and reply still reaches GPT',async()=>{
+  const h=harness('[say room]\nA cool evening settles.'),s=h.b.apiSession;
+  s.monitorEnabled=false;
+  let replies=0;
+  h.driver.request=async path=>{
+    if(path.endsWith('/chat'))return {};
+    if(path.endsWith('/chat/request')){
+      replies++;
+      h.b.heartbeat(GPT_ID,{...h.source,document:'gpt-reloaded',replyKey:'reload-answer'});
+      assert.equal(h.b.running,true);
+      assert.notEqual(h.b.phase,'uncertain');
+      return {replyMessage:{messageText:'I feel the cool evening air.'}};
+    }
+    throw Error('Unexpected Nomi request');
+  };
+  await h.driver.pump();await h.settle();
+  assert.equal(replies,1);
+  assert.equal(h.b.running,true);
+  assert.equal(h.b.tabs[virtual].reply,'I feel the cool evening air.');
+  assert.equal((await h.cp.load(ROOM)).status,'reply_received');
+});
+
+test('stopped recovery binding does not itself re-trigger a ChatGPT navigation stop',()=>{
+  const h=harness('[wait]'),b=h.b;
+  b.stop('Intentional pause for recovery');
+  b.phase='uncertain';
+  const oldUrl=b.tabs[GPT_ID].url;
+  b.heartbeat(GPT_ID,{...h.source,url:'https://chatgpt.com/c/other-thread',document:'new'});
+  assert.equal(b.reason,'Intentional pause for recovery');
+  assert.equal(b.running,false);
+  b.heartbeat(GPT_ID,{...h.source,url:oldUrl,document:'restored'});
+  assert.equal(b.reason,'Intentional pause for recovery');
+});
