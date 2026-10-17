@@ -53,21 +53,25 @@ test('background wakes and reinjects only the original GPT tab after temporary w
     }},
     alarms:{create(){},onAlarm:{addListener:fn=>onAlarm=fn}}
   };
+  let active;
+  class InstrumentedBridge extends Bridge {
+    constructor(...args){super(...args);active=this;}
+  }
   vm.runInNewContext(fs.readFileSync(require.resolve('../extension/background.js'),'utf8'),
-    {NomiApiDriver:driver,GroupBridge:Bridge,Bridge,queueMicrotask,
+    {NomiApiDriver:driver,GroupBridge:InstrumentedBridge,Bridge,queueMicrotask,
      setTimeout,clearTimeout,importScripts(){},chrome});
   onUpdate(123,{url:wrong});
   await new Promise(resolve=>setImmediate(resolve));
-  assert.equal(bridge.tabRetry?.expectedUrl,original);
-  assert.equal(bridge.running,true);
+  assert.equal(active.tabRetry?.expectedUrl,original);
+  assert.equal(active.running,true);
   assert.equal(reinjections.length,0);
   await onAlarm({name:'bridge-wake'});
   assert.equal(reinjections.length,0,'wrong chat URL cannot receive the content script');
-  assert.equal(bridge.running,true);
+  assert.equal(active.running,true);
   url=original;
   await onAlarm({name:'bridge-wake'});
   assert.deepEqual(reinjections,[123]);
-  assert.equal(bridge.tabRetry,null,'correct GPT conversation automatically reconnects');
-  assert.equal(bridge.running,true);
-  assert.equal(bridge.tabs[selected].url,original);
+  assert.equal(active.tabRetry,null,'correct GPT conversation automatically reconnects');
+  assert.equal(active.running,true);
+  assert.equal(active.tabs[selected].url,original);
 });
