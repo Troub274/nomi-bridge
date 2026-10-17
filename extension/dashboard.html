@@ -7,6 +7,15 @@
 <div class="grid"><label>Nomi API key<input type="password" id="api-key" autocomplete="off" placeholder="Paste Nomi API key (stored locally)"></label><div><label>Key status<span id="api-key-status">Not checked</span></label><div class="keyrow"><button id="save-api-key" type="button" class="small">Save key</button><button id="clear-api-key" type="button" class="small">Clear key</button></div></div></div>
 <div class="grid"><label>Nomi<select id="api-nomi"><option value="">Refresh to load Nomis…</option></select></label><label>Persistent API room<select id="api-room"><option value="">Choose a Nomi first…</option></select></label></div>
 <div class="keyrow"><button id="refresh-api" type="button" class="small">Refresh Nomis and rooms</button><button id="create-api-room" type="button" class="small">Create room for selected Nomi</button><input id="api-room-name" aria-label="New room name" maxlength="80" placeholder="New room name (optional)"></div>
+<label for="api-new-room-description">Description for new room (optional, up to 1,000 characters)
+<textarea id="api-new-room-description" rows="3" maxlength="1000" placeholder="World setting, ongoing circumstances, character environment…"></textarea></label>
+<div id="api-room-editor" hidden>
+<h2>Selected room description</h2>
+<label for="api-room-description">Room note / world setting (up to 1,000 characters)
+<textarea id="api-room-description" rows="5" maxlength="1000" placeholder="The setting and standing background for this Nomi's world"></textarea></label>
+<p class="muted">Editing the room note does not turn off backchanneling or change its Nomi membership.</p>
+<div class="keyrow"><button id="api-save-description" type="button" class="small">Save description</button><button id="api-delete-room" type="button" class="small stop">Delete room permanently…</button></div>
+</div>
 <p id="api-status" role="status" class="muted">Set your API key, then refresh the room list.</p>
 <div id="api-recovery" hidden>
 <h2>Room checkpoint and recovery</h2>
