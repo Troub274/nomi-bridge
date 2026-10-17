@@ -404,15 +404,18 @@ class NomiApiDriver {
     await this.transaction(()=>{
       const b=this.getBridge(),s=b.apiSession;
       if(b.mode!=='api-room'||s?.roomId!==cp.roomId)return;
-      if(!b.running||b.phase==='uncertain'){
+      if(!b.running||b.phase==='uncertain'||b.tabRetry){
         // The remote room reply was committed durably BEFORE this callback.
         // Do not erase the stop reason or attempt to send to a changed GPT
         // conversation. The operator can recover the already-saved reply.
         s.pendingReply='reply_saved';
         delete s.progress;
-        b.note('Nomi API reply was saved after the bridge stopped. NOT delivered to GPT. '+
-          'Restore the original ChatGPT conversation and use Recover Reply; '+
-          'no additional Nomi API request or world POST is needed.');
+        b.note(b.tabRetry
+          ?'Nomi API reply saved while waiting for the original ChatGPT tab to reconnect. '+
+            'No room resend; it will be delivered when the original conversation returns.'
+          :'Nomi API reply was saved after the bridge stopped. NOT delivered to GPT. '+
+            'Restore the original ChatGPT conversation and use Recover Reply; '+
+            'no additional Nomi API request or world POST is needed.');
         return;
       }
       const id=NomiApiRoom.apiRoomId(cp.roomId),prior=b.tabs[id]||{};
@@ -579,6 +582,21 @@ class NomiApiDriver {
       s.monitorEffectiveMode=nextMode;
     }
     const cmd=b.command;
+    // A Nomi reply already reached us while the GPT tab was missing.
+    // Deliver that CHECKPOINTED reply only after the ORIGINAL GPT URL is
+    // restored. Do not request Nomi to respond a second time.
+    if(s.pendingReply==='reply_saved'&&b.running&&!b.tabRetry&&
+       b.source===id&&b.phase==='reply'){
+      this.inFlight=true;
+      try {
+        const cp=await this.checkpoint.load(s.roomId);
+        if(cp?.status==='reply_received' && typeof cp.reply==='string')
+          await this.completeReply(cp,cp.reply);
+        else throw Error('Saved room reply checkpoint is unavailable.');
+      }catch(error){await this.fail('Saved reply delivery halted: '+error.message);}
+      finally{this.inFlight=false;queueMicrotask(()=>void this.pump());}
+      return;
+    }
     if(b.phase==='send'&&cmd?.target===id) {
       if(cmd.claimed)return;
       this.inFlight=true;this.waitCancelled=false;
