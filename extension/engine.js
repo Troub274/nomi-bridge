@@ -25,6 +25,11 @@ class Bridge {
     this.events = this.events.slice(-100);
   }
   stop(reason = 'Stopped. Press Play to resume.') {this.running = false; this.log(reason);}
+  // Append informational events without hiding a terminal stop/uncertain reason.
+  note(text) {
+    this.events.push({time:new Date().toLocaleTimeString(),text});
+    this.events=this.events.slice(-100);
+  }
   start(data) {
     if (this.running) throw Error('Already running. Stop before changing tabs.');
     if (this.phase === 'uncertain') throw Error('Delivery was uncertain. Check both chats, then Reset before starting again.');
@@ -66,7 +71,17 @@ class Bridge {
           this.baseline = snapshot.replyKey;
           this.startedWait = this.clock();
         }
-        this.log('Chat tab reloaded; retaining the API room and waiting for new complete activity.');
+        this.log('Chat tab reloaded at the same conversation URL; retaining the API room.');
+      } else if (this.mode==='api-room' && old.url!==snapshot.url &&
+          this.source!==id && this.tabs[id]?.site==='chatgpt' &&
+          ['ready','inflight','delivering','reply_saved'].includes(this.apiSession?.pendingReply)) {
+        // Never deliver an API-room reply to a different GPT conversation.
+        // The Nomi request can finish after this stop. Its reply remains in
+        // the durable checkpoint for recovery to the ORIGINAL chat URL.
+        this.phase='uncertain';
+        this.stop('Selected ChatGPT conversation changed while a Nomi API reply was pending. '+
+          'Do NOT resend world content or Reset. Reopen the original GPT conversation and '+
+          'use API Room > Recover Reply after the in-flight request finishes.');
       } else {
         this.phase = 'uncertain';
         this.stop('Selected chat reloaded or navigated during a potentially active send. Inspect before Reset.');
