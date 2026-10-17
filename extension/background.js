@@ -206,6 +206,7 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
       case '/api/api-catalog': return apiDriver.catalog();
       case '/api/api-checkpoint': return apiDriver.checkpointState(data.roomId);
       case '/api/api-journal': return apiDriver.journalState(data.roomId);
+      case '/api/api-clear-journal': return apiDriver.clearJournal(data.roomId);
       case '/api/api-abandon':
         if (apiDriver.inFlight || apiDriver.recoveryScheduled) throw Error('Stop and let the active API operation finish before abandoning.');
         return apiDriver.abandon(data.roomId);
