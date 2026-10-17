@@ -323,6 +323,6 @@ test('history pages preserve chronology across restart and suppress duplicate ob
   assert.ok(p1.pages>1);
   assert.ok(p1.events[0].seq>p2.events.at(-1).seq,'page 1 should be newer than page 2');
   assert.deepEqual(parseWorldCommand('[history 2]'),{kind:'history',page:2,text:''});
-  assert.equal(parseWorldCommand('[say chat]\\nhello').kind,'chat');
-  assert.equal(parseWorldCommand('[say room]\\nYou are thirsty.').text,'You are thirsty.');
+  assert.equal(parseWorldCommand('[say chat]\nhello').kind,'chat');
+  assert.equal(parseWorldCommand('[say room]\nYou are thirsty.').text,'You are thirsty.');
 });
