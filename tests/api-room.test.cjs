@@ -250,3 +250,56 @@ test('room management is blocked while the bridge runs',async()=>{
   await assert.rejects(()=>h.driver.updateRoomNote(ROOM,'new','old'));
   await assert.rejects(()=>h.driver.deleteRoom(ROOM,NOMI,'WORLD::Gwen'));
 });
+
+test('monitor routes world payload to room without requesting room reply when live conversation has history',async()=>{
+  const h=harness('[say room]\nYou are hungry and considering lunch.'),sent=[];
+  const s=h.b.apiSession;s.monitorEnabled=true;s.monitorTabId='555';
+  await h.driver.observeLive('555',{site:'nomi',url:'https://nomi.ai/nomis/'+NOMI,liveMessages:[
+    {speaker:'User',text:'How is your morning?',key:'u1'},
+    {speaker:'Nomi',text:'I am hungry.',key:'n1'}
+  ]});
+  let requested=0;
+  h.driver.request=async(path,method,body)=>{
+    if(path.endsWith('/chat')){sent.push(body.messageText);return {};}
+    if(path.endsWith('/chat/request')){requested++;return {replyMessage:{messageText:'unexpected'}};}
+    throw Error('Unexpected '+path);
+  };
+  await h.driver.pump();await h.settle();
+  assert.equal(sent.join(''),'You are hungry and considering lunch.');
+  assert.equal(requested,0,'live monitoring must suppress room reply requests');
+  assert.match(h.b.tabs[virtual].reply,/I am hungry/);
+  const cp=await h.cp.load(ROOM);
+  assert.equal(cp.status,'reply_received');
+  assert.equal(cp.sourceFullReply,h.reply);
+  assert.equal(cp.text,'You are hungry and considering lunch.');
+});
+
+test('monitor falls back to API room reply if private chat lacks observed messages',async()=>{
+  const h=harness('[say room]\nYou feel a cool breeze.');
+  const s=h.b.apiSession;s.monitorEnabled=true;s.monitorTabId='555';
+  await h.driver.observeLive('555',{site:'nomi',url:'https://nomi.ai/nomis/'+NOMI,liveMessages:[]});
+  let replied=0;
+  h.driver.request=async(path,method,body)=>{
+    if(path.endsWith('/chat'))return {};
+    if(path.endsWith('/chat/request')){replied++;return {replyMessage:{messageText:'I feel the breeze.'}};}
+    throw Error('Unexpected '+path);
+  };
+  await h.driver.pump();await h.settle();
+  assert.equal(replied,1);
+  assert.equal(h.b.tabs[virtual].reply,'I feel the breeze.');
+});
+
+test('monitor command [tail] reads local journal without posting a new Nomi message',async()=>{
+  const h=harness('[tail]'),s=h.b.apiSession;
+  s.monitorEnabled=true;s.monitorTabId='555';
+  await h.driver.observeLive('555',{site:'nomi',url:'https://nomi.ai/nomis/'+NOMI,liveMessages:[
+    {speaker:'User',text:'Let’s have coffee.',key:'a'},
+    {speaker:'Nomi',text:'Sounds lovely.',key:'b'}
+  ]});
+  let posts=0;
+  h.driver.request=async()=>{posts++;throw Error('Should not call Nomi API on [tail]');};
+  await h.driver.pump();await h.settle();
+  assert.equal(posts,0);
+  assert.match(h.b.tabs[virtual].reply,/Sounds lovely/);
+  assert.equal((await h.driver.observer.history(ROOM)).length,2);
+});
