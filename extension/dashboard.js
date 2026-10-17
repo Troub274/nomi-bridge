@@ -137,7 +137,7 @@ async function refreshJournalStatus(){
   try{
     const state=await request('api-journal',{roomId});
     if(roomId===$('api-room').value)
-      $('api-journal-status').textContent=(state.count||0)+' locally retained world/live events (latest 100).';
+      $('api-journal-status').textContent=(state.count||0)+' locally retained world/live events (latest 500).';
   }catch(e){$('api-journal-status').textContent=e.message;}
 }
 $('api-clear-journal').onclick=async()=>{
