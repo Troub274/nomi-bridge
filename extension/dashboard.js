@@ -1,5 +1,6 @@
+const WORLD_OBSERVER_BUILD = 'live-protocol-r4';
 const versionLabel = document.getElementById('build-version');
-if (versionLabel) versionLabel.textContent = 'v' + chrome.runtime.getManifest().version;
+if (versionLabel) versionLabel.textContent = 'v' + chrome.runtime.getManifest().version + ' · ' + WORLD_OBSERVER_BUILD;
 const $ = id => document.getElementById(id);
 let actionPending = false;
 let generation = 0;
@@ -354,7 +355,7 @@ refresh(); setInterval(refresh, 1500);
 $('copy-status').onclick = async () => {
   try {
     const state = await request('state');
-    const report = {version: chrome.runtime.getManifest().version, mode: state.mode, room: state.room && {autoChat:state.room.autoChat,userTurn:state.room.userTurn,memberCount:state.room.members.length}, running: state.running, phase: state.phase, reason: state.reason,
+    const report = {version: chrome.runtime.getManifest().version, observerBuild: WORLD_OBSERVER_BUILD, mode: state.mode, room: state.room && {autoChat:state.room.autoChat,userTurn:state.room.userTurn,memberCount:state.room.members.length}, running: state.running, phase: state.phase, reason: state.reason,
       turns: state.turns, lastDelivery: state.lastDelivery, events: state.events, tabs: state.tabs.map(t => ({site:t.site, connected:t.connected, ready:t.ready,
         busy:t.busy, draft:t.draft, replyCharacters:t.reply?.length || 0, complete:t.complete, completion:t.completion, matches:t.matches, diagnostic:t.diagnostic}))};
     await navigator.clipboard.writeText(JSON.stringify(report, null, 2));
