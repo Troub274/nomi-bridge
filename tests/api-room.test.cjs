@@ -251,41 +251,32 @@ test('room management is blocked while the bridge runs',async()=>{
   await assert.rejects(()=>h.driver.deleteRoom(ROOM,NOMI,'WORLD::Gwen'));
 });
 
-test('live monitor waits for fresh conversation instead of replaying old history as Nomi reply',async()=>{
+test('live nudge posts room text and immediately acknowledges to GPT without requesting Nomi reply',async()=>{
   const h=harness('[say room]\nYou are hungry and considering lunch.'),sent=[];
   const s=h.b.apiSession;s.monitorEnabled=true;s.monitorTabId='555';
   const url='https://nomi.ai/nomis/'+NOMI;
   await h.driver.observeLive('555',{site:'nomi',url,liveMessages:[
     {speaker:'User',text:'How is your morning?',key:'u1'},
-    {speaker:'Nomi',text:'I am hungry.',key:'n1'}
-  ]});
-  let requested=0;
+    {speaker:'Nomi',text:'I am hungry.',key:'n1'}]});
+  let roomReplies=0;
   h.driver.request=async(path,method,body)=>{
     if(path.endsWith('/chat')){sent.push(body.messageText);return {};}
-    if(path.endsWith('/chat/request')){requested++;return {replyMessage:{messageText:'unexpected'}};}
+    if(path.endsWith('/chat/request')){roomReplies++;return {replyMessage:{messageText:'unexpected'}};}
     throw Error('Unexpected '+path);
   };
   await h.driver.pump();await h.settle();
   assert.equal(sent.join(''),'You are hungry and considering lunch.');
-  assert.equal(requested,0);
-  assert.equal(h.b.tabs[virtual].reply,'','old live history must not be presented as a new reply');
+  assert.equal(roomReplies,0,'live nudge never demands a separate Nomi reply');
+  assert.match(h.b.tabs[virtual].reply,/WORLD ENGINE DELIVERY CONFIRMED/);
+  assert.match(h.b.tabs[virtual].reply,/NOT a Nomi message/);
+  assert.doesNotMatch(h.b.tabs[virtual].reply,/How is your morning/);
+  assert.equal(s.monitorLastSeq||0,0,'ack must not consume live transcript backlog');
   let cp=await h.cp.load(ROOM);
-  assert.equal(cp.status,'awaiting_reply');
-  assert.equal(s.pendingReply,'live_wait');
-  await h.driver.pump();await h.settle();
-  assert.equal(h.b.tabs[virtual].reply,'','polling cannot manufacture a GPT turn');
-  await h.driver.observeLive('555',{site:'nomi',url,liveMessages:[
-    {speaker:'User',text:'How is your morning?',key:'u1'},
-    {speaker:'Nomi',text:'I am hungry.',key:'n1'},
-    {speaker:'Nomi',text:'I will make lunch now.',key:'n2'}
-  ]});
-  await h.driver.pump();await h.settle();
-  assert.equal(requested,0,'fresh live observation must suppress room reply requests');
-  assert.match(h.b.tabs[virtual].reply,/I will make lunch now/);
-  cp=await h.cp.load(ROOM);
   assert.equal(cp.status,'reply_received');
-  assert.equal(cp.sourceFullReply,h.reply);
-  assert.equal(cp.text,'You are hungry and considering lunch.');
+  await h.driver.forwarded(ROOM);
+  cp=await h.cp.load(ROOM);
+  assert.equal(cp.status,'completed','confirmed GPT delivery completes checkpoint');
+  assert.equal(s.monitorLastSeq||0,0);
 });
 
 test('monitor falls back to API room reply if private chat lacks observed messages',async()=>{
@@ -412,7 +403,7 @@ test('regression: [listening] without a new message never requests a new Nomi tu
 
 test('command parser never treats malformed control tags as Nomi world messages',()=>{
   for(const input of [
-    '[tail] extra commentary','Here is my response:\n[tail]',
+    '[tail] extra commentary',
     '**[history]**', '- [listening]', '[wait]\nI am just thinking',
     '[history 2]\nThanks', '[say room]\nThe coffee is ready.\n[tail]',
     '[say chat]\nHi\n[wait]','[play]','[say]',
@@ -427,7 +418,7 @@ test('command parser never treats malformed control tags as Nomi world messages'
 });
 
 test('invalid [tail] or [history] command is consumed without any Nomi POST or checkpoint',async()=>{
-  for(const reply of ['[tail] followed by commentary','Here is the status:\n[history]',
+  for(const reply of ['[tail] followed by commentary','I could send [history] here',
       '[say room]\nYou feel hungry\n[wait]']){
     const h=harness(reply);
     let calls=0;
