@@ -184,7 +184,8 @@ class NomiApiDriver {
     const s=b.apiSession;
     s.monitorEnabled=!!data.monitorLive;
     s.monitorTabId=s.monitorEnabled?String(data.monitorTab||''):'';
-    s.monitorSeen=0;s.monitorCount=0;
+    s.monitorSeen=0;s.monitorCount=0;s.monitorLastActivity=0;
+    s.monitorIdleSeconds=Math.max(60,Math.min(3600,Number(data.monitorIdleSeconds)||300));
     s.monitorUrl='';
     s.monitorLastSeq=s.monitorLastSeq||0;
     if(s.monitorEnabled&&s.monitorTabId){
@@ -205,11 +206,13 @@ class NomiApiDriver {
     const s=this.getBridge()?.apiSession;
     return s?{roomName:s.roomName,nomiName:s.nomiName,pendingReply:s.pendingReply,progress:s.progress||null,
       monitorEnabled:!!s.monitorEnabled,monitorConnected:this.isLiveAvailable(s),
-      monitorTab:s.monitorTabId||null,monitorCount:s.monitorCount||0}:null;
+      monitorTab:s.monitorTabId||null,monitorCount:s.monitorCount||0,
+      monitorIdleSeconds:s.monitorIdleSeconds||300}:null;
   }
   isLiveAvailable(s=this.getBridge()?.apiSession) {
     return !!(s?.monitorEnabled&&s.monitorCount>0&&s.monitorSeen&&
-      Date.now()-s.monitorSeen<20000);
+      Date.now()-s.monitorSeen<20000&&s.monitorLastActivity&&
+      Date.now()-s.monitorLastActivity<1000*(s.monitorIdleSeconds||300));
   }
   async observeLive(tabId,snapshot) {
     const b=this.getBridge(),s=b?.apiSession;
@@ -228,7 +231,10 @@ class NomiApiDriver {
     s.monitorSeen=Date.now();s.monitorCount=msgs.length;
     if(msgs.length){
       const added=await this.observer.observeLive(s.roomId,snapshot.url,msgs);
-      if(added.length)b.log('Observed '+added.length+' live private-chat message(s).');
+      if(added.length){
+        s.monitorLastActivity=Date.now();
+        b.log('Observed '+added.length+' live private-chat message(s).');
+      }
     }
   }
   async clearJournal(roomId){
