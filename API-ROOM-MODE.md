@@ -20,10 +20,16 @@ This is the **third conversation mode**, alongside Direct Chat and Group Chat. I
 
 ## Reliability and limitations
 
-- A confirmed chunk is never deliberately replayed. On a timeout or uncertain API POST, delivery stops and becomes **uncertain**; inspect the room before resetting to avoid duplicates. The bridge does not automatically continue partial batches after uncertain network failures.
-- Stop during a multi-chunk send prevents additional chunks once the current request completes. Partial room state may need inspection.
-- Reply requests retry only on explicit not-ready responses (`NoReply`, `RoomNomiNotReadyForMessage`, `RoomStillCreating`, `TooManyRequests`), following the uploader. Other failures are treated as uncertain.
-- An unexpected Edge service-worker restart during an in-flight POST/reply requires inspection rather than blind resend.
+- **Durable checkpoint per room:** the bridge records `attempt` before each POST, `confirmed` after each acknowledged POST, and `reply_attempt`/`reply_committed` for Nomi responses. Checkpoints live in Edge extension local storage, survive an ordinary browser restart, and are separate from Nomi room history.
+- **Read-only API GETs** retry at most eight times for transient errors using 1, 2, 4, 8, 16, 30, 30 second exponential backoff. A content POST, room-creation POST, or ambiguous reply POST is **never** automatically repeated.
+- **NoReply / not-ready / rate-limit on a reply request:** continue waiting with exponential backoff (up to 30 seconds between attempts), with no fixed retry count, until Nomi answers or you stop the bridge. The original world message is **not** resent.
+- **Uncertain content POST:** Stop with its 1-based chunk index and the number of confirmed chunks intact. Review the room/checkpoint, click **Resume or authorize uncertain chunk**, and explicitly accept the risk of duplication. Only the first unconfirmed chunk is retried; earlier confirmed chunks are skipped.
+- **Uncertain reply POST:** Review and click **Resume or authorize uncertain reply**. This requests a reply only; it **never** resends the completed world message. A duplicate Nomi reply may result. If a reply was committed before the browser went away, recovery reuses it without requesting another reply.
+- **Stop during chunking:** a fully confirmed prefix is retained; use recovery controls rather than starting a new world turn. Abandoning the local checkpoint does not remove content already present in the room.
+- **Service-worker restart:** an in-flight POST cannot be inferred to have failed. The checkpoint remains unresolved until recovery is expressly authorized. The bridge requires the original ChatGPT conversation and Nomi room when resuming.
+- Only one Nomi may belong to an API room in this mode; rooms containing multiple Nomis are excluded from selection.
+- Storage and browser resources remain finite. The bridge imposes no overall length/truncation threshold on World Engine turns, but an exceptionally large output can exceed browser storage limits.
+- The older Direct Chat and Group Chat modes retain their existing behavior.
 - Existing Direct Chat and browser Group Chat modes are unchanged, including their existing message-size behavior.
 - This is an Edge extension mode, not yet wired into the separate portable Windows desktop wrapper.
 - Live Nomi account testing is needed. Unit/simulated room tests do not establish real-world API delivery.
