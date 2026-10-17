@@ -7,6 +7,8 @@ let lastState;
 let apiCatalog = null;
 let apiStartup = false;
 let apiKeyConfigured = false;
+let recoveryCheckpoint = null;
+let recoveryInProgress = false;
 function savedSelection(site) {try {return localStorage.getItem('bridge-' + site);} catch {return '';}}
 function showError(error) {
   const message = error?.message || String(error);
@@ -59,6 +61,7 @@ function render(state) {
   $('play').textContent = state.running ? '▶ Running — check status' : '▶ Play';
   $('reset').disabled = state.running;
   for (const id of ['api-nomi','api-room','api-key','save-api-key','clear-api-key','refresh-api','api-room-name','create-api-room']) $(id).disabled = state.running;
+  renderRecoveryButtons();
   $('count').textContent = `${state.turns} messages forwarded`;
   $('status').textContent = state.reason;
   $('status').className = state.running ? 'running' : '';
@@ -129,10 +132,67 @@ async function loadApi() {
     if (apiCatalog.nomis.some(n=>n.uuid===oldNomi)) $('api-nomi').value=oldNomi;
     else if (apiCatalog.nomis.length) $('api-nomi').value=apiCatalog.nomis[0].uuid;
     apiRoomOptions(oldRoom);
+    await loadCheckpoint();
     $('api-status').textContent='Found '+apiCatalog.nomis.length+' Nomis and '+apiCatalog.rooms.length+' API rooms. Only rooms belonging to the selected Nomi are offered.';
   } catch(error) { $('api-status').textContent=error.message; }
 }
-$('api-nomi').onchange=()=>apiRoomOptions();
+$('api-nomi').onchange=()=>{apiRoomOptions();void loadCheckpoint();};
+$('api-room').onchange=()=>void loadCheckpoint();
+function renderRecoveryButtons(){
+  const cp=recoveryCheckpoint;
+  const unsettled=cp && !['completed','abandoned'].includes(cp.status);
+  $('api-recovery').hidden=!unsettled;
+  const send=['planned','sending','paused','send_uncertain'].includes(cp?.status);
+  const reply=['awaiting_reply','reply_not_ready','reply_uncertain','reply_received'].includes(cp?.status);
+  $('api-recover-send').disabled=!send||!!lastState?.running||recoveryInProgress;
+  $('api-recover-reply').disabled=!reply||!!lastState?.running||recoveryInProgress;
+  $('api-abandon').disabled=!unsettled||!!lastState?.running||recoveryInProgress;
+  if(!cp){$('api-recovery-state').textContent='No pending checkpoint.';return;}
+  const uncertain=['send_uncertain','reply_uncertain'].includes(cp.status);
+  $('api-recovery-state').textContent='Status: '+cp.status+' · Confirmed '+cp.confirmed+'/'+cp.total+
+    ' content chunks · Attempted chunk '+(cp.attemptedIndex||'none')+
+    (uncertain?' · Outcome unknown: explicit authorization risks a duplicate.':'');
+}
+async function loadCheckpoint(){
+  const roomId=$('api-room').value;
+  if(!roomId) {recoveryCheckpoint=null;renderRecoveryButtons();return;}
+  try{
+    const result=await request('api-checkpoint',{roomId});
+    if(roomId!==$('api-room').value)return;
+    recoveryCheckpoint=result.checkpoint;
+    renderRecoveryButtons();
+  }catch(error){$('api-recovery-state').textContent=error.message;}
+}
+async function recoverApi(kind){
+  const cp=recoveryCheckpoint;
+  const nomiUuid=$('api-nomi').value,roomId=$('api-room').value,chatgptTab=$('chatgpt').value;
+  if(!cp||!roomId||!nomiUuid||!chatgptTab){$('api-status').textContent='Choose the original ChatGPT conversation, Nomi, and API room.';return;}
+  const duplicate=kind==='send'&&cp.status==='send_uncertain'||kind==='reply'&&cp.status==='reply_uncertain';
+  const warning=duplicate
+    ? 'This POST may already have succeeded. Recovering may duplicate one room chunk or one Nomi reply. Have you inspected the room and explicitly authorized that risk?'
+    : 'Resume the confirmed checkpoint without resending previously confirmed room chunks?';
+  if(!window.confirm(warning))return;
+  recoveryInProgress=true;renderRecoveryButtons();
+  try{
+    const result=await request(kind==='send'?'api-recover-send':'api-recover-reply',{roomId,nomiUuid,chatgptTab});
+    if(!result.started)throw Error('Recovery did not start.');
+    $('api-status').textContent='Recovery requested. Watch the checkpoint and Activity panel for progress.';
+  }catch(error){$('api-status').textContent=error.message;}
+  finally{recoveryInProgress=false;renderRecoveryButtons();}
+}
+$('api-recover-send').onclick=()=>void recoverApi('send');
+$('api-recover-reply').onclick=()=>void recoverApi('reply');
+$('api-abandon').onclick=async()=>{
+  const cp=recoveryCheckpoint;
+  if(!cp||!window.confirm('Abandon this local checkpoint? Sent content remains in the Nomi room. Recovery will no longer be possible from this checkpoint.'))return;
+  recoveryInProgress=true;renderRecoveryButtons();
+  try{
+    await request('api-abandon',{roomId:$('api-room').value});
+    await loadCheckpoint();
+    $('api-status').textContent='Checkpoint abandoned locally. Previously sent Nomi room content is unchanged.';
+  }catch(error){$('api-status').textContent=error.message;}
+  finally{recoveryInProgress=false;renderRecoveryButtons();}
+};
 $('refresh-api').onclick=()=>void loadApi();
 $('save-api-key').onclick=async()=>{
   try {
@@ -170,7 +230,10 @@ async function refresh() {
   if (refreshing || actionPending) return;
   const current = generation;
   refreshing = true;
-  try {const result = await request('state'); if (!actionPending && current === generation) render(result);}
+  try {const result = await request('state'); if (!actionPending && current === generation) render(result);
+    if ($('mode').value==='api-room' && !$('api-options').hidden && !recoveryInProgress && $('api-room').value)
+      await loadCheckpoint();
+  }
   catch (error) {if (!actionPending && current === generation) showError(error);}
   finally {refreshing = false;}
 }
