@@ -54,7 +54,7 @@ test('API room chunking is lossless in 800 UTF-8 byte POSTs with no total charac
 test('one complete GPT turn delivers every chunk, then asks one Nomi reply',async()=>{
   const h=harness(),sent=[];
   let requests=0;
-  h.driver.request=async(path,method,body)=>{
+  h.driver.request=async(path,method='GET',body)=>{
     if(path.endsWith('/chat')){sent.push(body.messageText);return {};}
     if(path.endsWith('/chat/request')){requests++;return {replyMessage:{messageText:'Gwen is ready.'}};}
     throw Error('Unexpected '+path);
@@ -187,6 +187,7 @@ test('room catalog exposes notes without exposing API credentials',async()=>{
 });
 test('editing room note only changes note, never backchanneling or membership',async()=>{
   const h=harness('hello');
+  h.stop();
   const posts=[],old='You are feeling hungry';
   let note=old;
   h.driver.request=async(path,method,body)=>{
@@ -206,7 +207,7 @@ test('room deletion requires exact name and confirmed DELETE before removing che
   const h=harness('hello');
   const requests=[];
   h.stop();
-  h.driver.request=async(path,method)=>{
+  h.driver.request=async(path,method='GET')=>{
     requests.push(method+' '+path);
     if(path==='/nomis')return {nomis:[{uuid:NOMI,name:'Gwen'}]};
     if(path==='/rooms')return {rooms:[{uuid:ROOM,name:'WORLD::Gwen',note:'World',nomis:[{uuid:NOMI}]}]};
