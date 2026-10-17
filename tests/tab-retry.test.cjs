@@ -24,7 +24,9 @@ test('background wakes and reinjects only the original GPT tab after temporary w
   bridge.phase='reply';
   bridge.source=virtual;
   bridge.pair=[selected,virtual];
-  bridge.apiSession={roomId:ROOM,pendingReply:'inflight',monitorEnabled:false};
+  // Model an active, checkpointed reply wait before an API request begins.
+  // A newly booted worker with 'inflight' correctly enters uncertain recovery.
+  bridge.apiSession={roomId:ROOM,pendingReply:'ready',monitorEnabled:false};
   let url=wrong,connected=false,updates=0;
   const reinjections=[];
   let onUpdate,onAlarm;
