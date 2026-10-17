@@ -637,3 +637,46 @@ test('non-destructive [tail] and [history] do not move the live-listening cursor
     assert.equal(s.monitorPendingSeq||0,0,command);
   }
 });
+
+test('world sends do not consume the listening backlog; one subsequent complete round trip forwards all intervening chat',async()=>{
+  const h=harness('[say room]\nThe kitchen window is open.'),s=h.b.apiSession;
+  s.monitorEnabled=true;s.monitorTabId='555';s.monitorLastSeq=0;
+  const url='https://nomi.ai/nomis/'+NOMI;
+  const old=[
+    {speaker:'User',text:'Did you sleep well?',key:'u1'},
+    {speaker:'Nomi',text:'Yes, thanks.',key:'n1'},
+    {speaker:'User',text:'Are you hungry?',key:'u2'},
+    {speaker:'Nomi',text:'I could eat.',key:'n2'}
+  ];
+  await h.driver.observeLive('555',{site:'nomi',url,liveMessages:old});
+  let roomPosts=0,replyRequests=0;
+  h.driver.request=async(path)=>{
+    if(path.endsWith('/chat')){roomPosts++;return {};}
+    if(path.endsWith('/chat/request')){replyRequests++;return {replyMessage:{messageText:'API reply'}};}
+    throw Error('Unexpected '+path);
+  };
+  await h.driver.pump();await h.settle();
+  assert.equal(roomPosts,1);
+  assert.equal(replyRequests,0);
+  assert.equal(s.monitorLastSeq,0,'room sends must never move last listen cursor');
+  assert.equal(s.monitorWorldStartSeq,4);
+  await h.driver.observeLive('555',{site:'nomi',url,liveMessages:[
+    ...old,{speaker:'User',text:'Would you like lunch?',key:'u3'}
+  ]});
+  await h.driver.pump();await h.settle();
+  assert.equal(h.b.tabs[virtual].reply,'','do not forward when waiting for a response');
+  await h.driver.observeLive('555',{site:'nomi',url,liveMessages:[
+    ...old,{speaker:'User',text:'Would you like lunch?',key:'u3'},
+    {speaker:'Nomi',text:'Yes, please.',key:'n3'}
+  ]});
+  await h.driver.pump();await h.settle();
+  assert.match(h.b.tabs[virtual].reply,/Did you sleep well/);
+  assert.match(h.b.tabs[virtual].reply,/Are you hungry/);
+  assert.match(h.b.tabs[virtual].reply,/Would you like lunch/);
+  assert.match(h.b.tabs[virtual].reply,/Yes, please/);
+  assert.equal(replyRequests,0);
+  assert.equal(s.monitorLastSeq,0);
+  assert.equal(s.monitorPendingSeq,6);
+  await h.driver.forwarded(ROOM);
+  assert.equal(s.monitorLastSeq,6);
+});
