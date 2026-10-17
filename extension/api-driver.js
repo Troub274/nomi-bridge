@@ -188,6 +188,8 @@ class NomiApiDriver {
     s.monitorIdleSeconds=Math.max(60,Math.min(3600,Number(data.monitorIdleSeconds)||300));
     s.monitorUrl='';
     s.monitorLastSeq=s.monitorLastSeq||0;
+    s.monitorPendingSeq=0;
+    s.monitorWorldStartSeq=0;
     if(s.monitorEnabled&&s.monitorTabId){
       if(!/^\d+$/.test(s.monitorTabId))throw Error('Invalid Nomi private-chat tab ID.');
       const tab=await chrome.tabs.get(Number(s.monitorTabId));
@@ -345,12 +347,13 @@ class NomiApiDriver {
       }
     }
   }
-  async completeReply(cp,reply,startedFromRecovery=false) {
+  async completeReply(cp,reply,startedFromRecovery=false,liveCursor=0) {
     await this.transaction(()=>{
       const b=this.getBridge(),s=b.apiSession;
       if(b.mode!=='api-room'||s?.roomId!==cp.roomId)return;
       const id=NomiApiRoom.apiRoomId(cp.roomId),prior=b.tabs[id]||{};
       s.pendingReply='delivering';delete s.progress;
+      if(liveCursor)s.monitorPendingSeq=liveCursor;
       s.sequence=(s.sequence||0)+1;
       b.heartbeat(id,this.snapshot(cp.roomId,s.nomiName,prior,{
         busy:false,reply,replyKey:'api-'+cp.roomId+'-'+s.sequence
@@ -363,7 +366,7 @@ class NomiApiDriver {
       b.log('Nomi replied in API room.');
     });
   }
-  async publishObservation(roomId,text){
+  async publishObservation(roomId,text,liveCursor=0){
     const b=this.getBridge(),s=b.apiSession;
     if(b.mode!=='api-room'||s?.roomId!==roomId||!b.running)return;
     const id=NomiApiRoom.apiRoomId(roomId),prior=b.tabs[id]||{};
@@ -371,6 +374,7 @@ class NomiApiDriver {
       const state=this.getBridge(),session=state.apiSession;
       if(!state.running||session?.roomId!==roomId)return;
       session.pendingReply='observation_delivering';
+      if(liveCursor)session.monitorPendingSeq=liveCursor;
       session.sequence=(session.sequence||0)+1;
       state.heartbeat(id,this.snapshot(roomId,session.nomiName,state.tabs[id]||{},{
         busy:false,reply:text,replyKey:'obs-'+roomId+'-'+session.sequence
@@ -439,9 +443,10 @@ class NomiApiDriver {
         ? completedLiveExchange(recent,s.monitorLastSeq||0)
         : {events:[],cursor:s.monitorLastSeq||0};
       if(exchange.events.length){
-        await this.publishObservation(s.roomId,
-          this.observer.format(exchange.events.slice(-20),'NEW COMPLETE USER / NOMI EXCHANGE',16000));
-        s.monitorLastSeq=exchange.cursor;
+        const report=this.observer.format(exchange.events,
+          'EVERY COMPLETE USER / NOMI MESSAGE SINCE PREVIOUS LISTEN',28000)+
+          (exchange.truncated?'\n[More completed messages are queued; send [listening] to retrieve the next batch.]':'');
+        await this.publishObservation(s.roomId,report,exchange.cursor);
       }else {
         // [wait] and [listening] are passive. No synthetic GPT response
         // and no API reply request when live chat is unavailable.
@@ -476,6 +481,10 @@ class NomiApiDriver {
         const verified=await this.transaction(()=>this.getBridge().validateSource(cmd.id,info?.snapshot));
         if(!verified)return;
         const roomCommand={...cmd,text:parsed.text};
+        if(this.isLiveAvailable(s)){
+          const recorded=await this.observer.history(s.roomId);
+          s.monitorWorldStartSeq=recorded.at(-1)?.seq||0;
+        }
         const cp=await this.checkpoint.begin({roomId:s.roomId,nomiUuid:s.nomiUuid,
           command:roomCommand,chunks:NomiApiRoom.apiChunks(roomCommand.text)});
         const allowed=await this.transaction(()=>this.getBridge().claim(id,cmd.id).allowed);
@@ -502,20 +511,21 @@ class NomiApiDriver {
       const exchange=s.monitorEnabled
         ? completedLiveExchange(await this.observer.history(s.roomId),s.monitorLastSeq||0)
         : {events:[],cursor:s.monitorLastSeq||0};
-      if(exchange.events.length) {
+      const eligible=cp?.status==='awaiting_reply'
+        ? exchange.events.some(e=>e.speaker==='Nomi'&&e.seq>(s.monitorWorldStartSeq||0))
+        : !!exchange.events.length;
+      if(eligible) {
         this.inFlight=true;
         try {
-          const observation=this.observer.format(exchange.events.slice(-20),
-            'NEW COMPLETE USER / NOMI EXCHANGE',16000);
+          const observation=this.observer.format(exchange.events,
+            'EVERY COMPLETE USER / NOMI MESSAGE SINCE PREVIOUS LISTEN',28000)+
+            (exchange.truncated?'\n[More completed messages are queued; send [listening] for the next batch.]':'');
           if(cp?.status==='awaiting_reply'){
-            // Persist both sides before forwarding to GPT; do not request
-            // an API room response when the live Nomi actually answered.
             await this.checkpoint.replyCommitted(cp,observation);
-            await this.completeReply(cp,observation);
+            await this.completeReply(cp,observation,false,exchange.cursor);
           } else {
-            await this.publishObservation(s.roomId,observation);
+            await this.publishObservation(s.roomId,observation,exchange.cursor);
           }
-          s.monitorLastSeq=exchange.cursor;
         } catch(error){await this.fail('Live observation delivery halted: '+error.message);}
         finally{this.inFlight=false;queueMicrotask(()=>void this.pump());}
       } else if(cp?.status==='awaiting_reply'&&!this.isLiveAvailable(s)){
@@ -548,8 +558,6 @@ class NomiApiDriver {
           // Do not manufacture a reply by replaying already-seen conversation.
           // The checkpoint remains safely awaiting_reply until new live
           // activity or a fallback Nomi API reply resolves it.
-          const recent=(await this.observer.history(s.roomId)).filter(e=>e.channel==='live');
-          s.monitorLastSeq=recent.at(-1)?.seq||s.monitorLastSeq||0;
           await this.transaction(()=>{
             const state=this.getBridge();
             if(state.apiSession?.roomId===s.roomId){
@@ -609,6 +617,8 @@ class NomiApiDriver {
         monitorUrl:monitorEnabled?(previous?.monitorUrl||''):'',
         monitorSeen:0,monitorCount:0,monitorLastActivity:0,
         monitorLastSeq:previous?.monitorLastSeq||0,
+        monitorPendingSeq:previous?.monitorPendingSeq||0,
+        monitorWorldStartSeq:previous?.monitorWorldStartSeq||0,
         monitorIdleSeconds:Math.max(60,Math.min(3600,Number(data.monitorIdleSeconds)||300))};
       b.heartbeat(id,this.snapshot(roomId,name,old));
     });
@@ -652,8 +662,6 @@ class NomiApiDriver {
         }
       }
       if(cp.status==='awaiting_reply'&&this.isLiveAvailable(session)){
-        const recent=(await this.observer.history(roomId)).filter(e=>e.channel==='live');
-        session.monitorLastSeq=recent.at(-1)?.seq||session.monitorLastSeq||0;
         await this.transaction(()=>{
           const state=this.getBridge();
           state.apiSession.pendingReply='live_wait';
@@ -670,6 +678,14 @@ class NomiApiDriver {
     } finally {this.inFlight=false;queueMicrotask(()=>void this.pump());}
   }
   async forwarded(roomId) {
+    const b=this.getBridge(),s=b.apiSession;
+    // Cursor is acknowledged ONLY after ChatGPT's editor confirmed receipt.
+    // A failed delivery must leave the complete exchange queued for retry.
+    if(s?.roomId===roomId&&s.monitorPendingSeq){
+      s.monitorLastSeq=Math.max(s.monitorLastSeq||0,s.monitorPendingSeq);
+      s.monitorPendingSeq=0;
+      b.log('Live catch-up confirmed through event #'+s.monitorLastSeq+'.');
+    }
     const cp=await this.checkpoint.load(roomId);
     if(cp?.status==='reply_received') {
       await this.checkpoint.delivered(cp);
