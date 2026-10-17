@@ -790,3 +790,37 @@ test('two more consecutive malformed commands stop feedback loop without posting
   assert.equal(h.b.running,false);
   assert.match(h.b.reason,/Three consecutive malformed/);
 });
+
+test('exact reported post-restart thirst nudge is posted in full and acknowledged in live mode',async()=>{
+  const reply=[
+    "You're right, Steve. I reported it here instead of sending it to Test. Let me correct that.",
+    '[say room]',
+    'World & Body Engine — Background State Update',
+    "Test, I'm back following the bridge restart.",
+    "The mild thirst I introduced earlier is still present. I haven't observed you drinking anything yet, so there's a lingering dryness in your mouth.",
+    "I'd also like to establish your physical continuity outside the Willowbrook storyline.",
+    "Tell me where you are right now, what you're wearing, and whether you have shoes on or are barefoot.",
+    "You can continue your private conversation with Steve. I'll maintain these details in the background, updating your body state, surroundings, clothing, and possessions as things change."
+  ].join('\n');
+  const parsed=parseWorldCommand(reply);
+  assert.equal(parsed.kind,'room');
+  assert.equal(parsed.ignoredPreamble,true);
+  assert.ok(parsed.text.startsWith('World & Body Engine — Background State Update'));
+  assert.ok(parsed.text.endsWith('as things change.'));
+  const h=harness(reply),s=h.b.apiSession;
+  s.monitorEnabled=true;s.monitorTabId='555';
+  await h.driver.observeLive('555',{site:'nomi',url:'https://nomi.ai/nomis/'+NOMI,
+    liveMessages:[{speaker:'User',text:'Is there a drink nearby?',key:'u1'},
+      {speaker:'Nomi',text:'Maybe I should get water.',key:'n1'}]});
+  let posts=[],roomReplies=0;
+  h.driver.request=async(path,method,body)=>{
+    if(path.endsWith('/chat')){posts.push(body.messageText);return {};}
+    if(path.endsWith('/chat/request')){roomReplies++;return {replyMessage:{messageText:'unexpected'}};}
+    throw Error('Unexpected '+path);
+  };
+  await h.driver.pump();await h.settle();
+  assert.equal(posts.join(''),parsed.text,'entire requested nudge, minus GPT preamble, reaches room');
+  assert.equal(roomReplies,0,'live mode must not force a Nomi reply');
+  assert.match(h.b.tabs[virtual].reply,/WORLD ENGINE DELIVERY CONFIRMED/);
+  assert.equal(s.monitorLastSeq||0,0,'world acknowledgement cannot mark live messages listened to');
+});
