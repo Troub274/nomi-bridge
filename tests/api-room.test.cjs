@@ -828,6 +828,8 @@ test('exact reported post-restart thirst nudge is posted in full and acknowledge
 test('[listening] returns a non-destructive status after 12 seconds without a complete exchange',async()=>{
   const h=harness('[listening]'),s=h.b.apiSession;
   s.monitorEnabled=true;s.monitorTabId='555';
+  await h.driver.observeLive('555',{site:'nomi',url:'https://nomi.ai/nomis/'+NOMI,
+    liveMessages:[{speaker:'User',text:'Question pending',key:'u1'}]});
   let requests=0;
   h.driver.request=async()=>{requests++;throw Error('No Nomi API operation should occur');};
   await h.driver.pump();await h.settle();
