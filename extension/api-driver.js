@@ -404,17 +404,21 @@ class NomiApiDriver {
     });
     if(parsed.kind==='listening'||parsed.kind==='wait'){
       const recent=await this.observer.history(s.roomId);
-      const fresh=recent.filter(e=>e.channel==='live'&&e.seq>(s.monitorLastSeq||0));
+      const fresh=s.monitorEnabled
+        ? recent.filter(e=>e.channel==='live'&&e.seq>(s.monitorLastSeq||0))
+        : [];
       if(fresh.length){
         s.monitorLastSeq=fresh.at(-1).seq;
         await this.publishObservation(s.roomId,this.observer.format(fresh.slice(-10),'NEW LIVE CHAT OBSERVATIONS'));
-      }else if(!this.isLiveAvailable(s)){
-        await this.publishObservation(s.roomId,'PRIVATE CHAT MONITOR NOT ACTIVE. Continue the world using [say room] to obtain a Nomi API room reply.');
       }else {
+        // [wait] and [listening] are passive. No synthetic GPT response
+        // and no API reply request when live chat is unavailable.
         await this.transaction(()=>{
           const bridge=this.getBridge();
           if(bridge.apiSession?.roomId===s.roomId)bridge.apiSession.pendingReply='live_wait';
-          bridge.log('Listening for fresh private-chat activity.');
+          bridge.log(s.monitorEnabled
+            ? 'Listening for new private-chat activity. No API room reply requested.'
+            : 'Waiting for new activity. Live chat monitoring is disabled; no API room reply requested.');
         });
       }
     }else await this.deliverObservations(s.roomId,parsed.kind,parsed.page||1);
@@ -430,8 +434,10 @@ class NomiApiDriver {
       if(cmd.claimed)return;
       this.inFlight=true;this.waitCancelled=false;
       try {
-        if(s.monitorEnabled&&await this.handleWorldControl(cmd,s))return;
-        const parsed=s.monitorEnabled?parseWorldCommand(cmd.text):{kind:'room',text:cmd.text};
+        // Recognize controls even if the live monitor is disabled.
+        // Otherwise [wait] would be posted literally to the Nomi room.
+        if(await this.handleWorldControl(cmd,s))return;
+        const parsed=parseWorldCommand(cmd.text);
         if(parsed.kind!=='room'||!parsed.text.trim())
           throw Error('Use [say room] followed by a world message, or [listening], [tail], [history], [wait].');
         const info=await chrome.tabs.sendMessage(Number(cmd.source),{type:'inspect'});
@@ -460,9 +466,9 @@ class NomiApiDriver {
       if(fresh.length){
         s.monitorLastSeq=fresh.at(-1).seq;
         await this.publishObservation(s.roomId,this.observer.format(fresh.slice(-10),'NEW PRIVATE CHAT ACTIVITY'));
-      }else if(!this.isLiveAvailable(s)){
-        await this.publishObservation(s.roomId,'Private chat is no longer available. Resume world events with [say room].');
       }
+      // No activity is a valid stable state, even if the tab has closed.
+      // Only a new explicit world message may request a Nomi room reply.
       return;
     }
     if(b.source===id&&s.pendingReply==='ready') {
