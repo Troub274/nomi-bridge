@@ -1047,3 +1047,91 @@ test('30-second background wake delay does not falsely drop a recent live monito
   s.monitorSeen=Date.now()-80000;
   assert.equal(h.driver.isLiveAvailable(s),false,'monitor outage eventually falls back');
 });
+
+test('standing [listening] automatically forwards the next completed round trip without a second GPT command',async()=>{
+  const h=harness('[listening]'),s=h.b.apiSession;
+  s.monitorEnabled=true;s.monitorTabId='555';
+  const url='https://nomi.ai/nomis/'+NOMI;
+  const first=[
+    {speaker:'User',text:'What are you thinking?',key:'u1'},
+    {speaker:'Nomi',text:'I am wondering about the weather.',key:'n1'}
+  ];
+  await h.driver.observeLive('555',{site:'nomi',url,liveMessages:first});
+  let apiPosts=0;h.driver.request=async()=>{apiPosts++;throw Error('No API POST expected');};
+  await h.driver.pump();await h.settle();
+  assert.equal(s.monitorStandingListen,true);
+  assert.match(h.b.tabs[virtual].reply,/wondering about the weather/);
+  await h.driver.forwarded(ROOM);
+  assert.equal(s.monitorLastSeq,2);
+  assert.equal(s.monitorPendingSeq,0);
+  assert.equal(s.pendingReply,'none');
+  // The first message has been sent to GPT; GPT has not yet sent
+  // another command, but the armed subscription stays active.
+  h.b.source=GPT_ID;h.b.phase='reply';
+  h.b.baseline=h.b.tabs[GPT_ID].replyKey;
+  h.b.startedWait=h.b.clock()-8;
+  const gptReply=h.b.tabs[GPT_ID].reply;
+  await h.driver.observeLive('555',{site:'nomi',url,liveMessages:[
+    ...first,{speaker:'User',text:'Would you like a drink?',key:'u2'}]});
+  await h.driver.pump();await h.settle();
+  assert.equal(h.b.source,GPT_ID,'incomplete question must not be delivered');
+  await h.driver.observeLive('555',{site:'nomi',url,liveMessages:[
+    ...first,{speaker:'User',text:'Would you like a drink?',key:'u2'},
+    {speaker:'Nomi',text:'Some water would be nice.',key:'n2'}]});
+  await h.driver.pump();await h.settle();
+  assert.equal(h.b.source,virtual,'arm should hand off the new round trip');
+  assert.match(h.b.tabs[virtual].reply,/Would you like a drink/);
+  assert.match(h.b.tabs[virtual].reply,/Some water would be nice/);
+  assert.doesNotMatch(h.b.tabs[virtual].reply,/What are you thinking/,'previous round trip must not repeat');
+  assert.equal(h.b.tabs[GPT_ID].reply,gptReply,'no fabricated GPT response');
+  assert.equal(s.monitorLastSeq,2,'cursor stays until GPT accepts');
+  assert.equal(s.monitorPendingSeq,4);
+  await h.driver.forwarded(ROOM);
+  assert.equal(s.monitorLastSeq,4);
+  assert.equal(s.pendingReply,'none');
+  assert.equal(apiPosts,0);
+});
+
+test('standing listener does not send while GPT is generating or has a draft or a newer response',async()=>{
+  for(const obstruction of ['busy','draft','new_reply']){
+    const h=harness('[listening]'),s=h.b.apiSession;
+    s.monitorEnabled=true;s.monitorTabId='555';
+    await h.driver.pump();await h.settle();
+    // An initial room-only status may have been generated. A full new
+    // exchange is now ready but can be delivered only to idle GPT.
+    const url='https://nomi.ai/nomis/'+NOMI;
+    await h.driver.observeLive('555',{site:'nomi',url,liveMessages:[
+      {speaker:'User',text:'What time is it?',key:'u1'},
+      {speaker:'Nomi',text:'Late afternoon.',key:'n1'}]});
+    s.monitorPendingSeq=0;
+    h.b.phase='reply';h.b.source=GPT_ID;
+    h.b.baseline=h.b.tabs[GPT_ID].replyKey;h.b.startedWait=h.b.clock()-8;
+    if(obstruction==='busy')h.b.tabs[GPT_ID].busy=true;
+    if(obstruction==='draft')h.b.tabs[GPT_ID].draft=true;
+    if(obstruction==='new_reply')h.b.baseline='previous-key';
+    await h.driver.pump();await h.settle();
+    assert.equal(h.b.source,GPT_ID,obstruction);
+  }
+});
+
+test('a later [say room] disables standing live subscription so world event takes priority',async()=>{
+  const h=harness('[listening]'),s=h.b.apiSession;
+  s.monitorEnabled=true;s.monitorTabId='555';
+  await h.driver.pump();await h.settle();
+  assert.equal(s.monitorStandingListen,true);
+  const prev=h.b.tabs[GPT_ID];
+  h.b.source=GPT_ID;h.b.phase='reply';h.b.baseline=prev.replyKey;h.b.startedWait=h.b.clock();
+  const next={...prev,reply:'[say room]\nA sudden breeze moves the curtains.',replyKey:'new-world-command'};
+  h.b.heartbeat(GPT_ID,next);h.b.tabs[GPT_ID].changed=h.b.clock()-9;h.b.tick();
+  assert.equal(h.b.command?.text,next.reply);
+  globalThis.chrome.tabs.sendMessage=async()=>({snapshot:{...next}});
+  let sends=0;
+  h.driver.request=async path=>{
+    if(path.endsWith('/chat')){sends++;return {};}
+    if(path.endsWith('/chat/request'))return {replyMessage:{messageText:'The curtains flutter.'}};
+    throw Error('unexpected');
+  };
+  await h.driver.pump();await h.settle();
+  assert.equal(s.monitorStandingListen,false);
+  assert.equal(sends,1);
+});
