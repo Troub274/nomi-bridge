@@ -62,7 +62,11 @@ test('background wakes and reinjects only the original GPT tab after temporary w
      setTimeout,clearTimeout,importScripts(){},chrome});
   onUpdate(123,{url:wrong});
   await new Promise(resolve=>setImmediate(resolve));
-  assert.equal(active.tabRetry?.expectedUrl,original);
+  assert.equal(active.tabRetry?.expectedUrl,original,JSON.stringify({
+    running:active.running,mode:active.mode,source:active.source,
+    phase:active.phase,pair:active.pair,pending:active.apiSession?.pendingReply,
+    selected:active.tabs[selected]?.url,reason:active.reason
+  }));
   assert.equal(active.running,true);
   assert.equal(reinjections.length,0);
   await onAlarm({name:'bridge-wake'});
