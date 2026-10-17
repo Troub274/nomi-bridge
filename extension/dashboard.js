@@ -1,4 +1,4 @@
-const WORLD_OBSERVER_BUILD = 'reply-retry-diagnostics-r9';
+const WORLD_OBSERVER_BUILD = 'late-reply-recovery-r10';
 const versionLabel = document.getElementById('build-version');
 if (versionLabel) versionLabel.textContent = 'v' + chrome.runtime.getManifest().version + ' · ' + WORLD_OBSERVER_BUILD;
 const $ = id => document.getElementById(id);
