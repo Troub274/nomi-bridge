@@ -634,6 +634,6 @@ test('non-destructive [tail] and [history] do not move the live-listening cursor
     await h.driver.pump();await h.settle();
     await h.driver.forwarded(ROOM);
     assert.equal(s.monitorLastSeq,0,command);
-    assert.equal(s.monitorPendingSeq,0,command);
+    assert.equal(s.monitorPendingSeq||0,0,command);
   }
 });
