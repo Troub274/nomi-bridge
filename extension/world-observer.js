@@ -8,6 +8,7 @@ class WorldObserver {
     this.maxEvents=maxEvents;
   }
   storageKey(roomId){return 'nomiWorldJournal:'+roomId;}
+  async clear(roomId){await this.storage.remove(this.storageKey(roomId));}
   async load(roomId){
     const key=this.storageKey(roomId),saved=(await this.storage.get(key))[key];
     return saved && Array.isArray(saved.events) ? saved :
