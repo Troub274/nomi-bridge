@@ -440,12 +440,13 @@ class NomiApiDriver {
         } else feedback=true;
       });
       if(feedback)await this.publishObservation(s.roomId,
-        'WORLD ENGINE COMMAND REJECTED — INTERNAL BRIDGE FEEDBACK, NOT NOMI.\\n'+
-        parsed.reason+'\\nNothing was sent to Nomi. This response is for GPT only.\\n'+
-        'Use ONE command on its own line: [listening], [tail], [history], or [say room] followed by world-event text.\\n'+
+        'WORLD ENGINE COMMAND REJECTED — INTERNAL BRIDGE FEEDBACK, NOT NOMI.\n'+
+        parsed.reason+'\nNothing was sent to Nomi. This response is for GPT only.\n'+
+        'Use ONE command on its own line: [listening], [tail], [history], or [say room] followed by world-event text.\n'+
         'You may explain your intent in prose BEFORE the standalone command; command names mentioned inside sentences are not executable.');
       return true;
     }
+    if(s.protocolFailures)s.protocolFailures=0;
     if(parsed.kind==='chat') {
       await this.transaction(()=>{
         const bridge=this.getBridge();
