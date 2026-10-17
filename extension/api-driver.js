@@ -215,8 +215,10 @@ class NomiApiDriver {
       roomReplyRequests:s.roomReplyRequests||0}:null;
   }
   isLiveAvailable(s=this.getBridge()?.apiSession) {
+    // The background wake alarm runs every 30 seconds. A background Nomi
+    // tab must not oscillate between live and room-only between those wakes.
     return !!(s?.monitorEnabled&&s.monitorCount>0&&s.monitorSeen&&
-      Date.now()-s.monitorSeen<20000&&s.monitorLastActivity&&
+      Date.now()-s.monitorSeen<75000&&s.monitorLastActivity&&
       Date.now()-s.monitorLastActivity<1000*(s.monitorIdleSeconds||300));
   }
   async observeLive(tabId,snapshot) {
