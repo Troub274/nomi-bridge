@@ -185,8 +185,13 @@ class NomiApiDriver {
     s.monitorTabId=s.monitorEnabled?String(data.monitorTab||''):'';
     s.monitorSeen=0;s.monitorCount=0;
     s.monitorLastSeq=s.monitorLastSeq||0;
-    if(s.monitorEnabled&&!/^\d+$/.test(s.monitorTabId))
-      throw Error('Select a Nomi private-chat tab for live monitoring.');
+    if(s.monitorEnabled&&s.monitorTabId){
+      if(!/^\d+$/.test(s.monitorTabId))throw Error('Invalid Nomi private-chat tab ID.');
+      const tab=await chrome.tabs.get(Number(s.monitorTabId));
+      const url=tab?.url||'';
+      if(!/^https:\/\/([a-z0-9-]+\.)?nomi\.ai\//i.test(url)||/\/group-chats\//.test(url))
+        throw Error('The monitor tab must be a Nomi private conversation.');
+    }
     const id=NomiApiRoom.apiRoomId(roomId);
     b.heartbeat(id,this.snapshot(roomId,nomi.name,b.tabs[id]||{}));
   }
@@ -202,8 +207,11 @@ class NomiApiDriver {
   }
   async observeLive(tabId,snapshot) {
     const b=this.getBridge(),s=b?.apiSession;
-    if(b?.mode!=='api-room'||!s?.monitorEnabled||s.monitorTabId!==String(tabId))return;
+    if(b?.mode!=='api-room'||!s?.monitorEnabled)return;
     if(snapshot?.site!=='nomi'||/\/group-chats\//.test(snapshot.url||''))return;
+    if(!s.monitorTabId && snapshot.url?.includes(s.nomiUuid))
+      s.monitorTabId=String(tabId);
+    if(s.monitorTabId!==String(tabId))return;
     const msgs=Array.isArray(snapshot.liveMessages)?snapshot.liveMessages:[];
     s.monitorSeen=Date.now();s.monitorCount=msgs.length;
     if(msgs.length){
