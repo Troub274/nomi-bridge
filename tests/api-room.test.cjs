@@ -1144,3 +1144,33 @@ test('one-shot [listening] timeout confirms a status to GPT and does not subscri
   assert.equal(h.b.tabs[virtual].reply,previous,'no unsolicited late reply after one-shot timed out');
   assert.equal(s.monitorLastSeq||0,0,'late answer survives for next explicit listen');
 });
+
+test('after confirmed live catch-up, 45s without a NEW GPT reply identifies selected tab instead of misleading listening status',()=>{
+  const h=harness('[listening]'),b=h.b,s=b.apiSession;
+  s.monitorEnabled=true;s.monitorTabId='555';
+  b.lastDelivery={from:'api-room',to:'chatgpt',readCharacters:16105,sentCharacters:16105};
+  b.phase='reply';b.source=GPT_ID;b.command=null;
+  b.baseline=b.tabs[GPT_ID].replyKey;
+  b.startedWait=b.clock()-50;
+  const other={...h.source,reply:'Another GPT conversation',replyKey:'another-gpt',document:'other-doc'};
+  b.heartbeat('567',other);
+  b.tick();
+  assert.equal(b.running,true);
+  assert.match(b.reason,/has not produced a NEW reply/);
+  assert.match(b.reason,/Selected GPT tab: 123/);
+  assert.match(b.reason,/Other ChatGPT tabs are also connected/);
+  assert.match(b.reason,/previous \[listening\] response was already delivered/);
+  assert.equal(s.monitorPendingSeq||0,0);
+});
+test('fresh GPT reply exits the post-delivery no-reply warning without automatic Nomi delivery',()=>{
+  const h=harness('[listening]'),b=h.b;
+  b.lastDelivery={from:'api-room',to:'chatgpt',readCharacters:350,sentCharacters:350};
+  b.phase='reply';b.source=GPT_ID;b.command=null;
+  b.baseline=b.tabs[GPT_ID].replyKey;
+  b.startedWait=b.clock()-50;
+  b.tick();assert.match(b.reason,/has not produced a NEW reply/);
+  const g={...h.source,reply:'[listening]',replyKey:'brand-new-gpt-command'};
+  b.heartbeat(GPT_ID,g);b.tabs[GPT_ID].changed=b.clock()-9;b.tick();
+  assert.equal(b.running,true);
+  assert.equal(b.command?.text,'[listening]');
+});
