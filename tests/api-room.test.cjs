@@ -303,3 +303,26 @@ test('monitor command [tail] reads local journal without posting a new Nomi mess
   assert.match(h.b.tabs[virtual].reply,/Sounds lovely/);
   assert.equal((await h.driver.observer.history(ROOM)).length,2);
 });
+
+test('history pages preserve chronology across restart and suppress duplicate observations',async()=>{
+  const h=harness('world init');
+  const journal=h.driver.observer;
+  for(let i=0;i<25;i++){
+    await journal.observeLive(ROOM,'https://nomi.ai/nomis/'+NOMI,[
+      {speaker:i%2?'Nomi':'User',text:'Message '+i+' '+('🍃'.repeat(300)),key:'msg-'+i}
+    ]);
+  }
+  await journal.observeLive(ROOM,'https://nomi.ai/nomis/'+NOMI,[
+    {speaker:'User',text:'Message 0 '+('🍃'.repeat(300)),key:'msg-0'}
+  ]);
+  const secondInstance=new WorldObserver(h.storage);
+  const entries=await secondInstance.history(ROOM);
+  assert.equal(entries.length,25);
+  const p1=await secondInstance.historyPage(ROOM,1,2500);
+  const p2=await secondInstance.historyPage(ROOM,2,2500);
+  assert.ok(p1.pages>1);
+  assert.ok(p1.events[0].seq>p2.events.at(-1).seq,'page 1 should be newer than page 2');
+  assert.deepEqual(parseWorldCommand('[history 2]'),{kind:'history',page:2,text:''});
+  assert.equal(parseWorldCommand('[say chat]\\nhello').kind,'chat');
+  assert.equal(parseWorldCommand('[say room]\\nYou are thirsty.').text,'You are thirsty.');
+});
