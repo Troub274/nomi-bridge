@@ -114,6 +114,9 @@ function transaction(fn) {
 }
 async function verifySource(command) {
   if (command?.groupCommand && command.packet) return bridge.validateSource(command.id);
+  // API room replies have no browser tab. Validate the immutable virtual snapshot.
+  if (bridge.mode === 'api-room' && bridge.tabs[command?.source]?.site === 'api-room')
+    return bridge.validateSource(command.id, bridge.tabs[command.source]);
   if (!command?.source) {bridge.stop('Reloaded an older queued message. Reset before continuing.'); return false;}
   let timeout;
   try {
