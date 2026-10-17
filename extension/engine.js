@@ -25,6 +25,22 @@ class Bridge {
     this.events = this.events.slice(-100);
   }
   stop(reason = 'Stopped. Press Play to resume.') {this.running = false; this.log(reason);}
+  retryGPTTab(id,observedUrl){
+    id=String(id);
+    const s=this.apiSession;
+    if(!this.running||this.mode!=='api-room'||this.pair?.[0]!==id||
+       this.source!==this.pair?.[1]||this.phase==='send'||
+       !['ready','inflight','delivering','reply_saved'].includes(s?.pendingReply))return false;
+    const expectedUrl=this.tabRetry?.expectedUrl||this.tabs[id]?.url;
+    if(!expectedUrl||expectedUrl===observedUrl)return false;
+    if(!this.tabRetry){
+      this.tabRetry={id,expectedUrl,startedAt:this.clock(),attempts:0};
+      this.log('Selected ChatGPT tab temporarily left its original conversation. '+
+        'Retrying that tab for 120 seconds; Nomi room events remain checkpointed.');
+    }
+    this.tabRetry.attempts++;
+    return true;
+  }
   // Append informational events without hiding a terminal stop/uncertain reason.
   note(text) {
     this.events.push({time:new Date().toLocaleTimeString(),text});
@@ -50,6 +66,7 @@ class Bridge {
     const settle = Number(data.settle ?? 8);
     this.stableSeconds = Number.isFinite(settle) ? Math.max(3, Math.min(60, settle)) : 8;
     if (this.command && !this.command.claimed) this.command.created = this.clock();
+    this.tabRetry=null;
     this.running = true; this.startedWait = this.clock();
     this.log('Running: waiting for a completed reply.'); this.tick();
   }
@@ -62,6 +79,22 @@ class Bridge {
     const old = this.tabs[id];
     const changed = !old || old.replyKey !== snapshot.replyKey || old.reply !== snapshot.reply || old.busy !== snapshot.busy || old.complete !== snapshot.complete || old.roomKey !== snapshot.roomKey || old.autoChat !== snapshot.autoChat || old.userTurn !== snapshot.userTurn;
     this.tabs[id] = {...snapshot, id, seen: this.clock(), changed: changed ? this.clock() : old.changed};
+    // Keep the original URL across a transient navigation. A snapshot from
+    // the wrong conversation must not update the trusted destination URL.
+    if(this.tabRetry?.id===String(id)){
+      if(snapshot.url===this.tabRetry.expectedUrl && snapshot.ready &&
+         !snapshot.busy && !snapshot.draft){
+        this.tabRetry=null;
+        this.log('Original ChatGPT conversation reconnected. Resuming the saved Nomi reply.');
+      }else{
+        this.tick();
+        return {};
+      }
+    }else if(this.running && this.pair?.includes(id) && old &&
+          old.url!==snapshot.url && this.retryGPTTab(id,snapshot.url)){
+      this.tick();
+      return {};
+    }
     if (this.running && this.pair?.includes(id) && this.phase !== 'idle' && old &&
         (old.url !== snapshot.url || old.document !== snapshot.document)) {
       // A harmless reload in API mode is NOT an uncertain Nomi API POST.
@@ -73,16 +106,6 @@ class Bridge {
           this.startedWait = this.clock();
         }
         this.log('Chat tab reloaded at the same conversation URL; retaining the API room.');
-      } else if (this.mode==='api-room' && old.url!==snapshot.url &&
-          this.source!==id && this.tabs[id]?.site==='chatgpt' &&
-          ['ready','inflight','delivering','reply_saved'].includes(this.apiSession?.pendingReply)) {
-        // Never deliver an API-room reply to a different GPT conversation.
-        // The Nomi request can finish after this stop. Its reply remains in
-        // the durable checkpoint for recovery to the ORIGINAL chat URL.
-        this.phase='uncertain';
-        this.stop('Selected ChatGPT conversation changed while a Nomi API reply was pending. '+
-          'Do NOT resend world content or Reset. Reopen the original GPT conversation and '+
-          'use API Room > Recover Reply after the in-flight request finishes.');
       } else {
         this.phase = 'uncertain';
         this.stop('Selected chat reloaded or navigated during a potentially active send. Inspect before Reset.');
@@ -95,6 +118,20 @@ class Bridge {
   tick() {
     if (!this.running) return;
     const now = this.clock();
+    if(this.tabRetry){
+      const age=Math.max(0,now-this.tabRetry.startedAt);
+      if(age>=120){
+        this.phase='uncertain';
+        this.stop('Original ChatGPT conversation did not reconnect within 120 seconds. '+
+          'Do NOT resend the world event or Reset. Restore the original GPT conversation and '+
+          'use Recover Reply after the Nomi request completes.');
+        return;
+      }
+      this.reason='Retrying original ChatGPT tab '+this.tabRetry.id+
+        ' ('+Math.floor(age)+'/120 seconds; '+this.tabRetry.attempts+
+        ' reconnect checks). Nomi reply will be saved until the original conversation returns.';
+      return;
+    }
     if (this.pair.some(id => !this.tabs[id] || now - this.tabs[id].seen > 120)) {
       if (this.command?.claimed) {
         this.phase = 'uncertain';
