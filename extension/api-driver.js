@@ -7,6 +7,7 @@ class NomiApiDriver {
     this.inFlight=false;
     this.waitCancelled=false;
     this.recoveryScheduled=false;
+    this.observer=new WorldObserver();
   }
   delay(ms) { return new Promise(resolve=>setTimeout(resolve,ms)); }
   transient(error) {
@@ -179,12 +180,41 @@ class NomiApiDriver {
     await this.waitForRoom(roomId);
     const old=b.apiSession?.roomId===roomId&&b.apiSession?.nomiUuid===nomi.uuid?b.apiSession:null;
     b.apiSession=old||{roomId,nomiUuid:nomi.uuid,nomiName:nomi.name,roomName:room.name,pendingReply:'none',sequence:0};
+    const s=b.apiSession;
+    s.monitorEnabled=!!data.monitorLive;
+    s.monitorTabId=s.monitorEnabled?String(data.monitorTab||''):'';
+    s.monitorSeen=0;s.monitorCount=0;
+    s.monitorLastSeq=s.monitorLastSeq||0;
+    if(s.monitorEnabled&&!/^\d+$/.test(s.monitorTabId))
+      throw Error('Select a Nomi private-chat tab for live monitoring.');
     const id=NomiApiRoom.apiRoomId(roomId);
     b.heartbeat(id,this.snapshot(roomId,nomi.name,b.tabs[id]||{}));
   }
   publicState() {
     const s=this.getBridge()?.apiSession;
-    return s?{roomName:s.roomName,nomiName:s.nomiName,pendingReply:s.pendingReply,progress:s.progress||null}:null;
+    return s?{roomName:s.roomName,nomiName:s.nomiName,pendingReply:s.pendingReply,progress:s.progress||null,
+      monitorEnabled:!!s.monitorEnabled,monitorConnected:this.isLiveAvailable(s),
+      monitorTab:s.monitorTabId||null,monitorCount:s.monitorCount||0}:null;
+  }
+  isLiveAvailable(s=this.getBridge()?.apiSession) {
+    return !!(s?.monitorEnabled&&s.monitorCount>0&&s.monitorSeen&&
+      Date.now()-s.monitorSeen<20000);
+  }
+  async observeLive(tabId,snapshot) {
+    const b=this.getBridge(),s=b?.apiSession;
+    if(b?.mode!=='api-room'||!s?.monitorEnabled||s.monitorTabId!==String(tabId))return;
+    if(snapshot?.site!=='nomi'||/\/group-chats\//.test(snapshot.url||''))return;
+    const msgs=Array.isArray(snapshot.liveMessages)?snapshot.liveMessages:[];
+    s.monitorSeen=Date.now();s.monitorCount=msgs.length;
+    if(msgs.length){
+      const added=await this.observer.observeLive(s.roomId,snapshot.url,msgs);
+      if(added.length)b.log('Observed '+added.length+' live private-chat message(s).');
+    }
+  }
+  async journalState(roomId){
+    if(!NomiApiRoom.safeNomiId(roomId))throw Error('Choose a valid API room.');
+    const j=await this.observer.load(roomId);
+    return {events:j.events.slice(-10),count:j.events.length,nextSeq:j.nextSeq};
   }
   async checkpointState(roomId) {
     if(!NomiApiRoom.safeNomiId(roomId))return {checkpoint:null};
@@ -204,7 +234,7 @@ class NomiApiDriver {
     const source=info?.snapshot;
     // Tab/document IDs can change after a browser restart; full original
     // message text and conversation URL must still match exactly.
-    if(!source||source.url!==cp.sourceUrl||source.reply!==cp.text||
+    if(!source||source.url!==cp.sourceUrl||source.reply!==(cp.sourceFullReply||cp.text)||
       source.busy||source.complete===false)
       throw Error('Original ChatGPT message is unavailable or changed; cannot safely resume this room.');
     cp.sourceDocument=source.document;
@@ -288,6 +318,69 @@ class NomiApiDriver {
       b.log('Nomi replied in API room.');
     });
   }
+  async publishObservation(roomId,text){
+    const b=this.getBridge(),s=b.apiSession;
+    if(b.mode!=='api-room'||s?.roomId!==roomId||!b.running)return;
+    const id=NomiApiRoom.apiRoomId(roomId),prior=b.tabs[id]||{};
+    await this.transaction(()=>{
+      const state=this.getBridge(),session=state.apiSession;
+      if(!state.running||session?.roomId!==roomId)return;
+      session.pendingReply='observation_delivering';
+      session.sequence=(session.sequence||0)+1;
+      state.heartbeat(id,this.snapshot(roomId,session.nomiName,state.tabs[id]||{},{
+        busy:false,reply:text,replyKey:'obs-'+roomId+'-'+session.sequence
+      }));
+      state.log('Forwarding live/world observations to GPT.');
+    });
+  }
+  async deliverObservations(roomId,kind='tail'){
+    const b=this.getBridge(),s=b.apiSession;
+    const entries=kind==='history'?await this.observer.history(roomId):
+      kind==='listening'? (await this.observer.tail(roomId,10)).filter(e=>e.channel==='live').slice(-2):
+      await this.observer.tail(roomId,10);
+    const last=entries.at(-1);
+    if(last)s.monitorLastSeq=Math.max(s.monitorLastSeq||0,last.seq);
+    const intro=kind==='history'?'WORLD ENGINE HISTORY':
+      kind==='listening'?'LATEST PRIVATE CHAT OBSERVATION':'LAST 10 WORLD/LIVE MESSAGES';
+    const message=entries.length?this.observer.format(entries,intro):
+      intro+' — No messages have been observed yet. If the private chat is closed, [say room] produces a Nomi room reply.\n';
+    await this.publishObservation(roomId,message);
+  }
+  async handleWorldControl(cmd,s) {
+    const parsed=parseWorldCommand(cmd.text);
+    if(!['tail','history','listening','wait','chat'].includes(parsed.kind))return false;
+    const b=this.getBridge(),id=b.pair?.[1];
+    const info=await chrome.tabs.sendMessage(Number(cmd.source),{type:'inspect'});
+    if(!await this.transaction(()=>this.getBridge().validateSource(cmd.id,info?.snapshot)))return true;
+    if(parsed.kind==='chat') {
+      // This mode is read-only with respect to the private chat by design.
+      throw Error('[say chat] is disabled: World Engine writes only to the API room.');
+    }
+    await this.transaction(()=>{
+      const bridge=this.getBridge();
+      const claimed=bridge.claim(id,cmd.id);
+      if(!claimed.allowed)throw Error('World command is no longer current.');
+      bridge.acknowledge(id,{id:cmd.id});
+      bridge.apiSession.pendingReply='observation_pending';
+    });
+    if(parsed.kind==='listening'||parsed.kind==='wait'){
+      const recent=await this.observer.history(s.roomId);
+      const fresh=recent.filter(e=>e.channel==='live'&&e.seq>(s.monitorLastSeq||0));
+      if(fresh.length){
+        s.monitorLastSeq=fresh.at(-1).seq;
+        await this.publishObservation(s.roomId,this.observer.format(fresh.slice(-10),'NEW LIVE CHAT OBSERVATIONS'));
+      }else if(!this.isLiveAvailable(s)){
+        await this.publishObservation(s.roomId,'PRIVATE CHAT MONITOR NOT ACTIVE. Continue the world using [say room] to obtain a Nomi API room reply.');
+      }else {
+        await this.transaction(()=>{
+          const bridge=this.getBridge();
+          if(bridge.apiSession?.roomId===s.roomId)bridge.apiSession.pendingReply='live_wait';
+          bridge.log('Listening for fresh private-chat activity.');
+        });
+      }
+    }else await this.deliverObservations(s.roomId,parsed.kind);
+    return true;
+  }
   async pump() {
     const b=this.getBridge();
     if(this.inFlight||!b?.running||b.mode!=='api-room')return;
@@ -298,23 +391,39 @@ class NomiApiDriver {
       if(cmd.claimed)return;
       this.inFlight=true;this.waitCancelled=false;
       try {
+        if(s.monitorEnabled&&await this.handleWorldControl(cmd,s))return;
+        const parsed=s.monitorEnabled?parseWorldCommand(cmd.text):{kind:'room',text:cmd.text};
+        if(parsed.kind!=='room'||!parsed.text.trim())
+          throw Error('Use [say room] followed by a world message, or [listening], [tail], [history], [wait].');
         const info=await chrome.tabs.sendMessage(Number(cmd.source),{type:'inspect'});
         const verified=await this.transaction(()=>this.getBridge().validateSource(cmd.id,info?.snapshot));
         if(!verified)return;
+        const roomCommand={...cmd,text:parsed.text};
         const cp=await this.checkpoint.begin({roomId:s.roomId,nomiUuid:s.nomiUuid,
-          command:cmd,chunks:NomiApiRoom.apiChunks(cmd.text)});
+          command:roomCommand,chunks:NomiApiRoom.apiChunks(roomCommand.text)});
         const allowed=await this.transaction(()=>this.getBridge().claim(id,cmd.id).allowed);
         if(!allowed)throw Error('Source changed after checkpoint creation; inspect checkpoint.');
         await this.sendChunks(cp,{mustRun:true});
+        await this.observer.roomEvent(s.roomId,'World Engine',roomCommand.text,'world-'+cp.turnId);
         await this.transaction(()=>{
           const b=this.getBridge();
           b.acknowledge(id,{id:cmd.id});
           b.apiSession.pendingReply='ready';
           b.heartbeat(id,this.snapshot(s.roomId,s.nomiName,b.tabs[id],{busy:true}));
-          b.log('All '+cp.total+' chunks confirmed; Nomi reply pending.');
+          b.log('All '+cp.total+' chunks confirmed; '+(this.isLiveAvailable(s)?'monitoring live chat.':'Nomi API reply pending.'));
         });
       } catch(error) {await this.fail('API room send halted: '+error.message);}
       finally {this.inFlight=false;queueMicrotask(()=>void this.pump());}
+      return;
+    }
+    if(b.source===id&&s.pendingReply==='live_wait'){
+      const fresh=(await this.observer.history(s.roomId)).filter(e=>e.channel==='live'&&e.seq>(s.monitorLastSeq||0));
+      if(fresh.length){
+        s.monitorLastSeq=fresh.at(-1).seq;
+        await this.publishObservation(s.roomId,this.observer.format(fresh.slice(-10),'NEW PRIVATE CHAT ACTIVITY'));
+      }else if(!this.isLiveAvailable(s)){
+        await this.publishObservation(s.roomId,'Private chat is no longer available. Resume world events with [say room].');
+      }
       return;
     }
     if(b.source===id&&s.pendingReply==='ready') {
@@ -323,8 +432,18 @@ class NomiApiDriver {
         const cp=await this.checkpoint.load(s.roomId);
         if(!cp||cp.status!=='awaiting_reply')throw Error('Missing confirmed content checkpoint; refusing reply request.');
         await this.transaction(()=>{this.getBridge().apiSession.pendingReply='inflight';});
-        const reply=await this.requestReply(cp);
-        await this.completeReply(cp,reply);
+        if(this.isLiveAvailable(s)){
+          const latest=(await this.observer.history(s.roomId)).filter(e=>e.channel==='live').slice(-10);
+          const intro='WORLD EVENT DELIVERED TO THE API ROOM. No API reply requested because private chat monitoring is active.\n';
+          const reply=intro+(latest.length?this.observer.format(latest,'RECENT LIVE CHAT'):'No recent private-chat messages.');
+          await this.checkpoint.replyCommitted(cp,reply);
+          await this.completeReply(cp,reply);
+          s.monitorLastSeq=latest.at(-1)?.seq||s.monitorLastSeq||0;
+        }else {
+          const reply=await this.requestReply(cp);
+          await this.observer.roomEvent(s.roomId,'Nomi',reply,'nomi-reply-'+cp.turnId);
+          await this.completeReply(cp,reply);
+        }
       } catch(error) {await this.fail('API room reply halted: '+error.message);}
       finally {this.inFlight=false;queueMicrotask(()=>void this.pump());}
     }
@@ -350,7 +469,7 @@ class NomiApiDriver {
     if(!src?.snapshot||src.snapshot.site!=='chatgpt'||src.snapshot.url!==cp.sourceUrl||
        src.snapshot.busy||src.snapshot.complete===false)
        throw Error('The original ChatGPT conversation is not open and ready.');
-    if(kind==='send'&&src.snapshot.reply!==cp.text)
+    if(kind==='send'&&src.snapshot.reply!==(cp.sourceFullReply||cp.text))
        throw Error('Original World Engine response differs; content recovery is blocked.');
     cp.sourceTab=selected;
     cp.sourceDocument=src.snapshot.document;
