@@ -395,3 +395,70 @@ test('regression: [listening] without a new message never requests a new Nomi tu
   assert.equal(requests,0);
   assert.equal(h.b.tabs[virtual].reply,'');
 });
+
+test('command parser never treats malformed control tags as Nomi world messages',()=>{
+  for(const input of [
+    '[tail] extra commentary','Here is my response:\n[tail]',
+    '**[history]**', '- [listening]', '[wait]\nI am just thinking',
+    '[history 2]\nThanks', '[say room]\nThe coffee is ready.\n[tail]',
+    '[say chat]\nHi\n[wait]','[play]','[say]',
+    '```text\n[tail]\nNot a valid batch\n```'
+  ]){
+    assert.equal(parseWorldCommand(input).kind,'invalid',input);
+  }
+  assert.equal(parseWorldCommand('```text\n[tail]\n```').kind,'tail');
+  assert.equal(parseWorldCommand('```\n[history 3]\n```').page,3);
+  assert.equal(parseWorldCommand('[say room]\nYou feel hungry.').kind,'room');
+  assert.equal(parseWorldCommand('[say room] The sun is rising.').text,'The sun is rising.');
+});
+
+test('invalid [tail] or [history] command is consumed without any Nomi POST or checkpoint',async()=>{
+  for(const reply of ['[tail] followed by commentary','Here is the status:\n[history]',
+      '[say room]\nYou feel hungry\n[wait]']){
+    const h=harness(reply);
+    let calls=0;
+    h.driver.request=async()=>{calls++;throw Error('Nomi API must never receive malformed control commands');};
+    await h.driver.pump();await h.settle();
+    assert.equal(calls,0,reply);
+    assert.equal(await h.cp.load(ROOM),null,'no checkpoint should be created');
+    assert.equal(h.b.running,true,'invalid tag must not poison API checkpoint recovery');
+    assert.equal(h.b.phase,'reply');
+    assert.equal(h.b.source,GPT_ID,'wait for a corrected GPT command');
+    assert.equal(h.b.command,null);
+    assert.match(h.b.reason,/protocol error/i);
+  }
+});
+
+test('direct checkpoint send guard refuses control commands before any room HTTP request',async()=>{
+  const h=harness('A world description.');
+  let posts=0;
+  h.driver.request=async()=>{posts++;throw Error('POST must not be executed');};
+  const cp={roomId:ROOM,nomiUuid:NOMI,text:'[tail]',total:1,confirmed:0,attemptedIndex:null};
+  await assert.rejects(()=>h.driver.sendChunks(cp));
+  assert.equal(posts,0);
+});
+
+test('passive listen survives the old 15-minute inactivity stop',async()=>{
+  const h=harness('[wait]');
+  h.b.apiSession.monitorEnabled=false;
+  h.driver.request=async()=>{throw Error('No API request expected');};
+  await h.driver.pump();await h.settle();
+  h.b.startedWait=h.b.clock()-1600;
+  h.b.tick();
+  assert.equal(h.b.running,true);
+  assert.equal(h.b.apiSession.pendingReply,'live_wait');
+});
+
+test('a harmless ChatGPT reload in API mode retains session and ignores stale GPT reply',async()=>{
+  const h=harness('[tail] unexpected commentary');
+  h.driver.request=async()=>{throw Error('No Nomi request expected');};
+  await h.driver.pump();await h.settle();
+  const previous=h.b.tabs[GPT_ID],newSnapshot={
+    ...previous,document:'new-doc-after-reload',replyKey:'reload-key'
+  };
+  h.b.heartbeat(GPT_ID,newSnapshot);
+  assert.equal(h.b.running,true);
+  assert.notEqual(h.b.phase,'uncertain');
+  assert.equal(h.b.baseline,'reload-key');
+  assert.equal(h.b.command,null);
+});
