@@ -85,6 +85,17 @@ class WorldObserver {
     return result.join('');
   }
 }
+/* Return complete NEW private-chat exchanges, never a lone user message.
+ * A run of User messages is buffered until Nomi replies; the returned cursor
+ * stops at that last completed Nomi message so later User messages survive.
+ */
+function completedLiveExchange(events,lastDeliveredSeq=0) {
+  if(!Array.isArray(events))return {events:[],cursor:lastDeliveredSeq};
+  const fresh=events.filter(e=>e&&e.channel==='live'&&e.seq>lastDeliveredSeq);
+  const lastNomi=[...fresh].reverse().find(e=>e.speaker==='Nomi');
+  if(!lastNomi)return {events:[],cursor:lastDeliveredSeq};
+  return {events:fresh.filter(e=>e.seq<=lastNomi.seq),cursor:lastNomi.seq};
+}
 function parseWorldCommand(text) {
   if (typeof text !== 'string' || !text.trim()) return {kind:'invalid',reason:'Empty World Engine command.'};
   // Remove a single complete Markdown fence if GPT supplied one.
@@ -122,5 +133,6 @@ function parseWorldCommand(text) {
   return {kind:'room',text,explicit:false};
 }
 globalThis.WorldObserver=WorldObserver;
+globalThis.completedLiveExchange=completedLiveExchange;
 globalThis.parseWorldCommand=parseWorldCommand;
-if(typeof module!=='undefined')module.exports={WorldObserver,parseWorldCommand};
+if(typeof module!=='undefined')module.exports={WorldObserver,parseWorldCommand,completedLiveExchange};
