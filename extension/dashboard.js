@@ -1,4 +1,4 @@
-const WORLD_OBSERVER_BUILD = 'one-shot-diagnostics-r8';
+const WORLD_OBSERVER_BUILD = 'reply-retry-diagnostics-r9';
 const versionLabel = document.getElementById('build-version');
 if (versionLabel) versionLabel.textContent = 'v' + chrome.runtime.getManifest().version + ' · ' + WORLD_OBSERVER_BUILD;
 const $ = id => document.getElementById(id);
@@ -362,7 +362,12 @@ $('copy-status').onclick = async () => {
         pendingReply:state.apiRoom.pendingReply, listenRequestPending:state.apiRoom.listenRequestPending,
         lastDeliveredSeq:state.apiRoom.lastDeliveredSeq,
         pendingDeliverySeq:state.apiRoom.pendingDeliverySeq,
-        roomReplyRequests:state.apiRoom.roomReplyRequests},
+        roomReplyRequests:state.apiRoom.roomReplyRequests,
+        replyAttemptsInTurn:state.apiRoom.replyAttemptsInTurn,
+        replyLastErrorType:state.apiRoom.replyLastErrorType,
+        replyLastHttpStatus:state.apiRoom.replyLastHttpStatus,
+        replyNextRetrySeconds:state.apiRoom.replyNextRetrySeconds,
+        replyWaitStartedAt:state.apiRoom.replyWaitStartedAt},
       selectedGPTTab:state.pair?.[0]||null, waitingOnTab:state.source||null,
       room: state.room && {autoChat:state.room.autoChat,userTurn:state.room.userTurn,memberCount:state.room.members.length}, running: state.running, phase: state.phase, reason: state.reason,
       turns: state.turns, lastDelivery: state.lastDelivery, events: state.events, tabs: state.tabs.map(t => ({id:t.id,site:t.site, selectedGPT:t.id===state.pair?.[0],
