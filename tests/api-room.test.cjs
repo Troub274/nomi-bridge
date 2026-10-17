@@ -1135,3 +1135,37 @@ test('a later [say room] disables standing live subscription so world event take
   assert.equal(s.monitorStandingListen,false);
   assert.equal(sends,1);
 });
+
+test('20-minute idle after a [listening] check does not strand later private-chat round trips',async()=>{
+  const h=harness('[listening]'),s=h.b.apiSession;
+  s.monitorEnabled=true;s.monitorTabId='555';s.monitorLastSeq=0;
+  const url='https://nomi.ai/nomis/'+NOMI;
+  const question={speaker:'User',text:'Question before long pause',key:'u1'};
+  await h.driver.observeLive('555',{site:'nomi',url,liveMessages:[question]});
+  let apiCalls=0;
+  h.driver.request=async()=>{apiCalls++;throw Error('Listening must never call Nomi API');};
+  await h.driver.pump();await h.settle();
+  assert.equal(s.pendingReply,'live_wait');
+  assert.equal(s.monitorStandingListen,true);
+  s.listenDeadline=Date.now()-1;
+  await h.driver.pump();await h.settle();
+  assert.match(h.b.tabs[virtual].reply,/LISTEN CHECK COMPLETE/);
+  await h.driver.forwarded(ROOM);
+  assert.equal(s.pendingReply,'none');
+  assert.equal(s.monitorStandingListen,true);
+  h.b.source=GPT_ID;h.b.phase='reply';
+  h.b.baseline=h.b.tabs[GPT_ID].replyKey;
+  h.b.startedWait=h.b.clock()-1200;
+  h.b.tick();
+  assert.equal(h.b.running,true,'idle World Engine does not stop after 20 minutes');
+  await h.driver.observeLive('555',{site:'nomi',url,liveMessages:[
+    question,{speaker:'Nomi',text:'I am back and ready to talk.',key:'n1'}
+  ]});
+  await h.driver.pump();await h.settle();
+  assert.equal(h.b.source,virtual);
+  assert.match(h.b.tabs[virtual].reply,/Question before long pause/);
+  assert.match(h.b.tabs[virtual].reply,/I am back and ready to talk/);
+  assert.equal(s.monitorLastSeq,0);
+  assert.equal(s.monitorPendingSeq,2);
+  assert.equal(apiCalls,0);
+});
