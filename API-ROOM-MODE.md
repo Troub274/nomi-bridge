@@ -10,6 +10,15 @@ This is the **third conversation mode**, alongside Direct Chat and Group Chat. I
 4. Click **Refresh Nomis and rooms**. Choose **one Nomi** and an existing room containing her, or create a new dedicated room (e.g. `WORLD::Gwen`).
 5. Select your ChatGPT tab, and press Play. ChatGPT is always the initial speaker in this mode; send an opening prompt there if needed.
 
+## Manage API rooms from the bridge
+
+With API Room mode selected and the world-engine bridge **stopped**, choose one Nomi and its API room:
+
+- **Create room:** enter an optional name and description (maximum 1,000 characters), then create the room. Backchanneling remains **enabled**.
+- **Save description:** edit the selected room's note and save. Only the `note` property is sent; the selected Nomi and backchanneling setting are not modified. The bridge checks for an edit made elsewhere before writing.
+- **Delete room permanently:** press **Delete room permanently…**, type the room's exact name, and approve a separate final confirmation. A room with an unfinished send/reply checkpoint must be recovered or explicitly abandoned before deletion.
+- Deletion removes the **API room and its room history**, not the Nomi herself. A timeout during deletion has an uncertain outcome; **refresh the list** before trying again. No automatic retries of DELETE or PUT requests.
+
 ## Every turn
 
 - Wait for a **complete ChatGPT answer**. A large World Engine action is allowed without a total message-length limit in the bridge.
