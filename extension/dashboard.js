@@ -78,6 +78,7 @@ function render(state) {
   renderRoomManagementButtons();
   $('api-clear-journal').disabled=state.running || apiManagementPending || recoveryInProgress;
   $('api-monitor-live').disabled=state.running;
+  $('api-monitor-idle').disabled=state.running || !$('api-monitor-live').checked;
   $('api-monitor-tab').disabled=state.running || !$('api-monitor-live').checked;
   $('count').textContent = `${state.turns} messages forwarded`;
   $('status').textContent = state.reason;
@@ -111,7 +112,8 @@ $('play').onclick = () => {
     tabs: [$('chatgpt').value, api ? 'api:room:' + roomId : $('nomi').value],
     first: api ? 'first' : $('first').value, settle: $('settle').value,
     ...(api ? {nomiUuid:$('api-nomi').value,
-      monitorLive:$('api-monitor-live').checked,monitorTab:$('api-monitor-tab').value} : {})};
+      monitorLive:$('api-monitor-live').checked,monitorTab:$('api-monitor-tab').value,
+      monitorIdleSeconds:Number($('api-monitor-idle').value)||300} : {})};
   if (api && (!apiKeyConfigured || !data.nomiUuid || !roomId)) {
     showError(Error('Save the Nomi API key, select one Nomi, and choose or create an API room.'));return;
   }
@@ -127,6 +129,7 @@ $('stop').onclick = () => action('stop');
 $('mode').onchange = () => {if (lastState) render(lastState);};
 $('api-monitor-live').onchange=()=>{
   $('api-monitor-tab').disabled=!$('api-monitor-live').checked||!!lastState?.running;
+  $('api-monitor-idle').disabled=!$('api-monitor-live').checked||!!lastState?.running;
 };
 async function refreshJournalStatus(){
   const roomId=$('api-room').value;
