@@ -251,10 +251,11 @@ test('room management is blocked while the bridge runs',async()=>{
   await assert.rejects(()=>h.driver.deleteRoom(ROOM,NOMI,'WORLD::Gwen'));
 });
 
-test('monitor routes world payload to room without requesting room reply when live conversation has history',async()=>{
+test('live monitor waits for fresh conversation instead of replaying old history as Nomi reply',async()=>{
   const h=harness('[say room]\nYou are hungry and considering lunch.'),sent=[];
   const s=h.b.apiSession;s.monitorEnabled=true;s.monitorTabId='555';
-  await h.driver.observeLive('555',{site:'nomi',url:'https://nomi.ai/nomis/'+NOMI,liveMessages:[
+  const url='https://nomi.ai/nomis/'+NOMI;
+  await h.driver.observeLive('555',{site:'nomi',url,liveMessages:[
     {speaker:'User',text:'How is your morning?',key:'u1'},
     {speaker:'Nomi',text:'I am hungry.',key:'n1'}
   ]});
@@ -266,9 +267,22 @@ test('monitor routes world payload to room without requesting room reply when li
   };
   await h.driver.pump();await h.settle();
   assert.equal(sent.join(''),'You are hungry and considering lunch.');
-  assert.equal(requested,0,'live monitoring must suppress room reply requests');
-  assert.match(h.b.tabs[virtual].reply,/I am hungry/);
-  const cp=await h.cp.load(ROOM);
+  assert.equal(requested,0);
+  assert.equal(h.b.tabs[virtual].reply,'','old live history must not be presented as a new reply');
+  let cp=await h.cp.load(ROOM);
+  assert.equal(cp.status,'awaiting_reply');
+  assert.equal(s.pendingReply,'live_wait');
+  await h.driver.pump();await h.settle();
+  assert.equal(h.b.tabs[virtual].reply,'','polling cannot manufacture a GPT turn');
+  await h.driver.observeLive('555',{site:'nomi',url,liveMessages:[
+    {speaker:'User',text:'How is your morning?',key:'u1'},
+    {speaker:'Nomi',text:'I am hungry.',key:'n1'},
+    {speaker:'Nomi',text:'I will make lunch now.',key:'n2'}
+  ]});
+  await h.driver.pump();await h.settle();
+  assert.equal(requested,0,'fresh live observation must suppress room reply requests');
+  assert.match(h.b.tabs[virtual].reply,/I will make lunch now/);
+  cp=await h.cp.load(ROOM);
   assert.equal(cp.status,'reply_received');
   assert.equal(cp.sourceFullReply,h.reply);
   assert.equal(cp.text,'You are hungry and considering lunch.');
@@ -461,4 +475,26 @@ test('a harmless ChatGPT reload in API mode retains session and ignores stale GP
   assert.notEqual(h.b.phase,'uncertain');
   assert.equal(h.b.baseline,'reload-key');
   assert.equal(h.b.command,null);
+});
+
+test('inactive live monitor falls back to one reply for already sent world text',async()=>{
+  const h=harness('[say room]\nThe rain has started.'),s=h.b.apiSession;
+  s.monitorEnabled=true;s.monitorTabId='555';s.monitorIdleSeconds=300;
+  const url='https://nomi.ai/nomis/'+NOMI;
+  await h.driver.observeLive('555',{site:'nomi',url,liveMessages:[
+    {speaker:'User',text:'Morning!',key:'u1'}]});
+  let posts=0,replies=0;
+  h.driver.request=async(path)=>{
+    if(path.endsWith('/chat')){posts++;return {};}
+    if(path.endsWith('/chat/request')){replies++;return {replyMessage:{messageText:'It is raining.'}};}
+    throw Error('Unexpected '+path);
+  };
+  await h.driver.pump();await h.settle();
+  assert.equal(posts,1);assert.equal(replies,0);
+  assert.equal(s.pendingReply,'live_wait');
+  s.monitorLastActivity=Date.now()-301000;
+  await h.driver.pump();await h.settle();
+  assert.equal(posts,1,'fallback never resends world message');
+  assert.equal(replies,1,'fallback requests precisely one room reply');
+  assert.equal(h.b.tabs[virtual].reply,'It is raining.');
 });
