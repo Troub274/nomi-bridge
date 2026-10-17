@@ -75,7 +75,7 @@ test('one complete GPT turn delivers every chunk, then asks one Nomi reply',asyn
 });
 test('ambiguous second POST never auto retries; confirmed first chunk is preserved',async()=>{
   const h=harness('z'.repeat(1850)),sent=[];
-  h.driver.request=async(path,method,body)=>{
+  h.driver.request=async(path,method='GET',body)=>{
     if(path.endsWith('/chat')){
       sent.push(body.messageText);
       if(sent.length===2)throw Error('502 after potentially successful remote POST');
@@ -95,7 +95,7 @@ test('ambiguous second POST never auto retries; confirmed first chunk is preserv
 test('operator-authorized send recovery never repeats earlier confirmed chunks',async()=>{
   const h=harness('z'.repeat(1850)),sent=[];
   let fail=true,replies=0;
-  h.driver.request=async(path,method,body)=>{
+  h.driver.request=async(path,method='GET',body)=>{
     if(path.endsWith('/chat')){
       sent.push(body.messageText);
       if(fail&&sent.length===2){fail=false;throw Error('Ambiguous gateway failure');}
@@ -122,7 +122,7 @@ test('explicit NoReply retries reply request with exponential backoff, not World
   const h=harness('Hello Gwen.'),sent=[],delays=[];
   let replies=0;
   h.driver.delay=async ms=>delays.push(ms);
-  h.driver.request=async(path,method,body)=>{
+  h.driver.request=async(path,method='GET',body)=>{
     if(path.endsWith('/chat')){sent.push(body.messageText);return {};}
     if(path.endsWith('/chat/request')){
       replies++;
@@ -140,7 +140,7 @@ test('explicit NoReply retries reply request with exponential backoff, not World
 test('reply request with ambiguous outcome cannot be retried without operator consent',async()=>{
   const h=harness('Hello'),sent=[];
   let requests=0;
-  h.driver.request=async(path,method,body)=>{
+  h.driver.request=async(path,method='GET',body)=>{
     if(path.endsWith('/chat')){sent.push(body.messageText);return {};}
     if(path.endsWith('/chat/request')){requests++;throw Error('Timeout after Nomi may have replied');}
     throw Error('Unexpected '+path);
@@ -190,7 +190,7 @@ test('editing room note only changes note, never backchanneling or membership',a
   h.stop();
   const posts=[],old='You are feeling hungry';
   let note=old;
-  h.driver.request=async(path,method,body)=>{
+  h.driver.request=async(path,method='GET',body)=>{
     if(path==='/rooms/'+ROOM && method==='GET')return {room:{uuid:ROOM,name:'WORLD::Gwen',note,backchannelingEnabled:true}};
     if(path==='/rooms/'+ROOM && method==='PUT'){posts.push(body);note=body.note;return {room:{uuid:ROOM,note}};}
     throw Error('Unexpected '+path);
@@ -231,7 +231,7 @@ test('deletion never retries an uncertain DELETE and never destroys checkpoint',
   h.stop();
   await h.storage.set({['nomiApiCheckpoint:'+ROOM]:{roomId:ROOM,status:'completed',confirmed:1,total:1}});
   let deletions=0;
-  h.driver.request=async(path,method)=>{
+  h.driver.request=async(path,method='GET')=>{
     if(path==='/nomis')return {nomis:[{uuid:NOMI,name:'Gwen'}]};
     if(path==='/rooms')return {rooms:[{uuid:ROOM,name:'World',nomis:[{uuid:NOMI}]}]};
     if(path==='/rooms/'+ROOM && method==='GET')return {room:{uuid:ROOM,name:'World',note:'World'}};
