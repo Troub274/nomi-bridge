@@ -69,5 +69,16 @@ class WorldObserver {
     return lines.join('');
   }
 }
+function parseWorldCommand(text) {
+  if(typeof text!=='string')return {kind:'invalid',text:''};
+  const input=text.trim();
+  const match=/^\[(listening|tail|history|wait|say room|say chat)\](?:\s*\n|\s*$)/i.exec(input);
+  if(!match)return {kind:'room',text};
+  const tag=match[1].toLowerCase(),body=input.slice(match[0].length);
+  if(tag==='say room')return {kind:'room',text:body};
+  if(tag==='say chat')return {kind:'chat',text:body};
+  return {kind:tag,text:body};
+}
 globalThis.WorldObserver=WorldObserver;
-if(typeof module!=='undefined')module.exports={WorldObserver};
+globalThis.parseWorldCommand=parseWorldCommand;
+if(typeof module!=='undefined')module.exports={WorldObserver,parseWorldCommand};
