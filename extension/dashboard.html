@@ -33,6 +33,7 @@
 </div>
 <p class="muted">Unknown POST outcomes are never resent without your explicit authorization. A repeated content chunk or reply request may produce duplicates. Abandoning does not erase anything already sent to Nomi.</p>
 </div>
+<div id="api-journal-tools" class="keyrow"><p id="api-journal-status" class="muted">Local history keeps the most recent 100 observed events.</p><button id="api-clear-journal" type="button" class="small stop">Clear local history…</button></div>
 </div><p id="room-state" role="status"></p><div class="grid"><label>First chat<select id="chatgpt"><option value="">Waiting for connected tabs…</option></select></label><label>Second chat<select id="nomi"><option value="">Waiting for connected tabs…</option></select></label></div>
 <div class="grid"><label>First reply comes from<select id="first"><option value="first">First chat</option><option value="second">Second chat</option></select></label><label>Wait after reply stops changing<select id="settle"><option value="8">8 seconds</option><option value="15">15 seconds</option><option value="30">30 seconds</option></select></label></div>
 <div class="controls"><button id="play" class="primary">▶ Play</button><button id="stop" class="stop">■ Stop</button><span id="count">0 messages forwarded</span></div><p id="error" role="alert"></p><p id="status" role="status">Connecting…</p><p class="muted">Play resumes the pending turn. Stop prevents further sends; a message already submitted can still receive a reply. There is no turn limit.</p>
