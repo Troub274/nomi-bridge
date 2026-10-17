@@ -824,3 +824,63 @@ test('exact reported post-restart thirst nudge is posted in full and acknowledge
   assert.match(h.b.tabs[virtual].reply,/WORLD ENGINE DELIVERY CONFIRMED/);
   assert.equal(s.monitorLastSeq||0,0,'world acknowledgement cannot mark live messages listened to');
 });
+
+test('[listening] returns a non-destructive status after 12 seconds without a complete exchange',async()=>{
+  const h=harness('[listening]'),s=h.b.apiSession;
+  s.monitorEnabled=true;s.monitorTabId='555';
+  let requests=0;
+  h.driver.request=async()=>{requests++;throw Error('No Nomi API operation should occur');};
+  await h.driver.pump();await h.settle();
+  assert.equal(s.pendingReply,'live_wait');
+  assert.ok(s.listenDeadline>Date.now());
+  assert.equal(h.b.tabs[virtual].reply,'');
+  const cursor=s.monitorLastSeq||0;
+  s.listenDeadline=Date.now()-1;
+  await h.driver.pump();await h.settle();
+  assert.match(h.b.tabs[virtual].reply,/LISTEN CHECK COMPLETE/);
+  assert.match(h.b.tabs[virtual].reply,/No new complete User \/ Nomi round trip/);
+  assert.match(h.b.tabs[virtual].reply,/NOT NOMI/);
+  assert.equal(s.monitorLastSeq||0,cursor);
+  assert.equal(s.monitorPendingSeq||0,0);
+  assert.equal(s.listenDeadline,0);
+  assert.equal(requests,0);
+});
+
+test('[wait] stays indefinite and never issues the [listening] timeout notice',async()=>{
+  const h=harness('[wait]'),s=h.b.apiSession;
+  s.monitorEnabled=true;s.monitorTabId='555';
+  h.driver.request=async()=>{throw Error('No Nomi API request');};
+  await h.driver.pump();await h.settle();
+  assert.equal(s.listenDeadline,0);
+  await h.driver.pump();await h.settle();
+  assert.equal(h.b.tabs[virtual].reply,'');
+  assert.equal(s.pendingReply,'live_wait');
+});
+
+test('timed-out [listening] buffers incomplete user turn for later full catch-up',async()=>{
+  const h=harness('[listening]'),s=h.b.apiSession;
+  s.monitorEnabled=true;s.monitorTabId='555';
+  const url='https://nomi.ai/nomis/'+NOMI;
+  const question={speaker:'User',text:'Are you thirsty?',key:'q'};
+  await h.driver.observeLive('555',{site:'nomi',url,liveMessages:[question]});
+  h.driver.request=async()=>{throw Error('No Nomi API request');};
+  await h.driver.pump();await h.settle();
+  s.listenDeadline=Date.now()-1;
+  await h.driver.pump();await h.settle();
+  assert.match(h.b.tabs[virtual].reply,/1 unacknowledged live message/);
+  assert.equal(s.monitorLastSeq||0,0);
+  await h.driver.observeLive('555',{site:'nomi',url,liveMessages:[
+    question,{speaker:'Nomi',text:'Yes, I need some water.',key:'a'}
+  ]});
+  const p=h.b.tabs[GPT_ID];
+  h.b.source=GPT_ID;h.b.phase='reply';h.b.baseline=p.replyKey;h.b.startedWait=h.b.clock();
+  const next={...p,reply:'[listening]',replyKey:'second-listen'};
+  h.b.heartbeat(GPT_ID,next);h.b.tabs[GPT_ID].changed=h.b.clock()-9;h.b.tick();
+  assert.equal(h.b.command?.text,'[listening]');
+  globalThis.chrome.tabs.sendMessage=async()=>({snapshot:{...next}});
+  await h.driver.pump();await h.settle();
+  assert.match(h.b.tabs[virtual].reply,/Are you thirsty/);
+  assert.match(h.b.tabs[virtual].reply,/I need some water/);
+  assert.equal(s.monitorLastSeq||0,0);
+  assert.equal(s.monitorPendingSeq,2);
+});
