@@ -625,7 +625,7 @@ test('non-destructive [tail] and [history] do not move the live-listening cursor
   }
 });
 
-test('world sends do not consume the listening backlog; one subsequent complete round trip forwards all intervening chat',async()=>{
+test('world nudges ACK to GPT; next [listening] catches up without losing live round trips',async()=>{
   const h=harness('[say room]\nThe kitchen window is open.'),s=h.b.apiSession;
   s.monitorEnabled=true;s.monitorTabId='555';s.monitorLastSeq=0;
   const url='https://nomi.ai/nomis/'+NOMI;
@@ -645,17 +645,26 @@ test('world sends do not consume the listening backlog; one subsequent complete 
   await h.driver.pump();await h.settle();
   assert.equal(roomPosts,1);
   assert.equal(replyRequests,0);
-  assert.equal(s.monitorLastSeq,0,'room sends must never move last listen cursor');
-  assert.equal(s.monitorWorldStartSeq,4);
+  assert.match(h.b.tabs[virtual].reply,/DELIVERY CONFIRMED/);
+  assert.equal(s.monitorLastSeq,0,'room send ACK must not advance last listen cursor');
+  await h.driver.forwarded(ROOM);
+  assert.equal((await h.cp.load(ROOM)).status,'completed');
   await h.driver.observeLive('555',{site:'nomi',url,liveMessages:[
-    ...old,{speaker:'User',text:'Would you like lunch?',key:'u3'}
-  ]});
+    ...old,{speaker:'User',text:'Would you like lunch?',key:'u3'}]});
   await h.driver.pump();await h.settle();
-  assert.equal(h.b.tabs[virtual].reply,'','do not forward when waiting for a response');
+  assert.match(h.b.tabs[virtual].reply,/DELIVERY CONFIRMED/,'do not push user-only events');
   await h.driver.observeLive('555',{site:'nomi',url,liveMessages:[
     ...old,{speaker:'User',text:'Would you like lunch?',key:'u3'},
-    {speaker:'Nomi',text:'Yes, please.',key:'n3'}
-  ]});
+    {speaker:'Nomi',text:'Yes, please.',key:'n3'}]});
+  await h.driver.pump();await h.settle();
+  assert.match(h.b.tabs[virtual].reply,/DELIVERY CONFIRMED/,'wait for GPT to issue [listening]');
+  const b=h.b,prev=b.tabs[GPT_ID];
+  b.source=GPT_ID;b.phase='reply';b.baseline=prev.replyKey;b.startedWait=b.clock();
+  const reply={...prev,reply:'[listening]',replyKey:'reply-2'};
+  b.heartbeat(GPT_ID,reply);
+  b.tabs[GPT_ID].changed=b.clock()-9;b.tick();
+  assert.equal(b.command?.text,'[listening]');
+  globalThis.chrome.tabs.sendMessage=async()=>({snapshot:{...reply}});
   await h.driver.pump();await h.settle();
   assert.match(h.b.tabs[virtual].reply,/Did you sleep well/);
   assert.match(h.b.tabs[virtual].reply,/Are you hungry/);
@@ -663,7 +672,32 @@ test('world sends do not consume the listening backlog; one subsequent complete 
   assert.match(h.b.tabs[virtual].reply,/Yes, please/);
   assert.equal(replyRequests,0);
   assert.equal(s.monitorLastSeq,0);
-  assert.equal(s.monitorPendingSeq,7,'the room event has its own sequence number');
+  assert.equal(s.monitorPendingSeq,7,'room event has its own sequence number');
   await h.driver.forwarded(ROOM);
   assert.equal(s.monitorLastSeq,7);
+});
+
+test('GPT commentary before [say room] is stripped and only the world update is posted',async()=>{
+  const gptReply="Oh, absolutely! I'll give Test a small bodily sensation.\n"+
+    "I am just observing the conversation without interrupting.\n"+
+    "[say room]\nWorld & Body Engine — Background Update\n"+
+    "Test, you notice mild dryness in your mouth. You're thirsty.";
+  assert.equal(parseWorldCommand(gptReply).kind,'room');
+  assert.equal(parseWorldCommand(gptReply).ignoredPreamble,true);
+  const h=harness(gptReply),s=h.b.apiSession;
+  s.monitorEnabled=true;s.monitorTabId='555';
+  await h.driver.observeLive('555',{site:'nomi',url:'https://nomi.ai/nomis/'+NOMI,
+    liveMessages:[{speaker:'User',text:'Hello',key:'u1'}]});
+  let posted='',replies=0;
+  h.driver.request=async(path,method,body)=>{
+    if(path.endsWith('/chat')){posted+=body.messageText;return {};}
+    if(path.endsWith('/chat/request')){replies++;return {replyMessage:{messageText:'No'}};}
+    throw Error('unexpected '+path);
+  };
+  await h.driver.pump();await h.settle();
+  assert.equal(posted,'World & Body Engine — Background Update\nTest, you notice mild dryness in your mouth. You\'re thirsty.');
+  assert.doesNotMatch(posted,/Oh, absolutely/);
+  assert.doesNotMatch(posted,/\[say room\]/);
+  assert.equal(replies,0);
+  assert.match(h.b.tabs[virtual].reply,/DELIVERY CONFIRMED/);
 });
