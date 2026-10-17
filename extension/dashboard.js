@@ -76,6 +76,7 @@ function render(state) {
   for (const id of ['api-nomi','api-room','api-key','save-api-key','clear-api-key','refresh-api','api-room-name','api-new-room-description','create-api-room']) $(id).disabled = state.running;
   renderRecoveryButtons();
   renderRoomManagementButtons();
+  $('api-clear-journal').disabled=state.running || apiManagementPending || recoveryInProgress;
   $('api-monitor-live').disabled=state.running;
   $('api-monitor-tab').disabled=state.running || !$('api-monitor-live').checked;
   $('count').textContent = `${state.turns} messages forwarded`;
@@ -127,6 +128,27 @@ $('mode').onchange = () => {if (lastState) render(lastState);};
 $('api-monitor-live').onchange=()=>{
   $('api-monitor-tab').disabled=!$('api-monitor-live').checked||!!lastState?.running;
 };
+async function refreshJournalStatus(){
+  const roomId=$('api-room').value;
+  if(!roomId){$('api-journal-status').textContent='Select an API room to inspect local history.';return;}
+  try{
+    const state=await request('api-journal',{roomId});
+    if(roomId===$('api-room').value)
+      $('api-journal-status').textContent=(state.count||0)+' locally retained world/live events (latest 100).';
+  }catch(e){$('api-journal-status').textContent=e.message;}
+}
+$('api-clear-journal').onclick=async()=>{
+  const roomId=$('api-room').value;
+  if(!roomId||lastState?.running||apiManagementPending)return;
+  if(!window.confirm('Erase this room’s locally retained world and private-chat observations? The actual Nomi room and chat are unaffected.'))return;
+  apiManagementPending=true;$('api-clear-journal').disabled=true;
+  try{
+    await request('api-clear-journal',{roomId});
+    await refreshJournalStatus();
+    $('api-status').textContent='Local world observation history cleared.';
+  }catch(error){$('api-status').textContent=error.message;}
+  finally{apiManagementPending=false;$('api-clear-journal').disabled=!!lastState?.running;}
+};
 function apiRoomOptions(desiredRoom = '') {
   const id = $('api-nomi').value;
   const old = desiredRoom || $('api-room').value;
@@ -177,11 +199,12 @@ async function loadApi() {
     else if (apiCatalog.nomis.length) $('api-nomi').value=apiCatalog.nomis[0].uuid;
     apiRoomOptions(oldRoom);
     await loadCheckpoint();
+    await refreshJournalStatus();
     $('api-status').textContent='Found '+apiCatalog.nomis.length+' Nomis and '+apiCatalog.rooms.length+' API rooms. Only single-Nomi rooms for the selected Nomi are offered.';
   } catch(error) { $('api-status').textContent=error.message; }
 }
 $('api-nomi').onchange=()=>{apiRoomOptions();void loadCheckpoint();};
-$('api-room').onchange=()=>{showRoomEditor(true);void loadCheckpoint();};
+$('api-room').onchange=()=>{showRoomEditor(true);void loadCheckpoint();void refreshJournalStatus();};
 $('api-save-description').onclick=async()=>{
   const room=selectedApiRoom();
   if(!room||apiManagementPending||lastState?.running)return;
