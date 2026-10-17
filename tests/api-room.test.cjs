@@ -326,3 +326,21 @@ test('history pages preserve chronology across restart and suppress duplicate ob
   assert.equal(parseWorldCommand('[say chat]\nhello').kind,'chat');
   assert.equal(parseWorldCommand('[say room]\nYou are thirsty.').text,'You are thirsty.');
 });
+
+test('open but idle private chat returns to room replies after inactivity threshold',async()=>{
+  const h=harness('[say room]\nThe afternoon is getting cooler.');
+  const s=h.b.apiSession;
+  s.monitorEnabled=true;s.monitorTabId='555';s.monitorIdleSeconds=120;
+  await h.driver.observeLive('555',{site:'nomi',url:'https://nomi.ai/nomis/'+NOMI,
+    liveMessages:[{speaker:'User',text:'Morning',key:'a'},{speaker:'Nomi',text:'Good morning',key:'b'}]});
+  s.monitorLastActivity=Date.now()-121000;
+  assert.equal(h.driver.isLiveAvailable(s),false);
+  let replies=0;
+  h.driver.request=async(path)=>{
+    if(path.endsWith('/chat'))return {};
+    if(path.endsWith('/chat/request')){replies++;return {replyMessage:{messageText:'I notice the cool air.'}};}
+    throw Error('unexpected API');
+  };
+  await h.driver.pump();await h.settle();
+  assert.equal(replies,1);
+});
