@@ -24,6 +24,7 @@ class ApiRoomCheckpoint {
       version:1,turnId:command.id,roomId,nomiUuid,
       sourceTab:command.source,sourceUrl:command.sourceUrl,
       sourceDocument:command.sourceDocument,sourceReplyKey:command.sourceKey,
+      sourceFullReply:command.sourceReply||command.text,
       text:command.text,
       total:chunks.length,confirmed:0,attemptedIndex:null,
       status:'planned', events:[],startedAt:new Date().toISOString()
