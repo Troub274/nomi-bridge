@@ -6,6 +6,7 @@ class NomiApiDriver {
     this.checkpoint=checkpoint;
     this.inFlight=false;
     this.waitCancelled=false;
+    this.recoveryScheduled=false;
   }
   delay(ms) { return new Promise(resolve=>setTimeout(resolve,ms)); }
   transient(error) {
@@ -142,10 +143,14 @@ class NomiApiDriver {
   async verifiedSource(cp) {
     const info=await chrome.tabs.sendMessage(Number(cp.sourceTab),{type:'inspect'});
     const source=info?.snapshot;
-    if(!source||source.url!==cp.sourceUrl||source.document!==cp.sourceDocument ||
-      source.replyKey!==cp.sourceReplyKey||source.reply!==cp.text ||
+    // Tab/document IDs can change after a browser restart; full original
+    // message text and conversation URL must still match exactly.
+    if(!source||source.url!==cp.sourceUrl||source.reply!==cp.text||
       source.busy||source.complete===false)
-      throw Error('The original ChatGPT reply changed. Cannot safely recover this checkpoint in another conversation.');
+      throw Error('Original ChatGPT message is unavailable or changed; cannot safely resume this room.');
+    cp.sourceDocument=source.document;
+    cp.sourceReplyKey=source.replyKey;
+    await this.checkpoint.save(cp);
   }
   async sendChunks(cp,{mustRun=false}={}) {
     const chunks=NomiApiRoom.apiChunks(cp.text);
@@ -266,15 +271,44 @@ class NomiApiDriver {
     }
   }
   stopWaiting() {this.waitCancelled=true;}
-  async recover(roomId,kind) {
+  startRecovery(roomId,kind,data={}) {
+    if(this.inFlight||this.recoveryScheduled)throw Error('Recovery already in progress.');
+    this.recoveryScheduled=true;
+    void Promise.resolve().then(()=>this.recover(roomId,kind,data))
+      .catch(error=>this.transaction(()=>this.getBridge().log('Recovery rejected: '+error.message)))
+      .finally(()=>{this.recoveryScheduled=false;});
+    return {started:true};
+  }
+  async recover(roomId,kind,data={}) {
     if(this.inFlight)throw Error('API operation in progress. Stop and retry after it finishes.');
     const cp=await this.checkpoint.load(roomId);
     if(!cp)throw Error('No checkpoint exists for this room.');
     if(this.getBridge()?.running)throw Error('Stop the bridge before recovering.');
-    const b=this.getBridge(),s=b?.apiSession;
-    if(b?.mode!=='api-room'||s?.roomId!==roomId||s?.nomiUuid!==cp.nomiUuid ||
-      b.pair?.[0]!==cp.sourceTab)
-      throw Error('Reconnect the original ChatGPT tab and the same Nomi API room before recovery.');
+    const b=this.getBridge(),selected=String(data.chatgptTab||b.pair?.[0]||'');
+    if(!/^\d+$/.test(selected))throw Error('Choose the original ChatGPT conversation tab.');
+    if(data.nomiUuid!==cp.nomiUuid)throw Error('Selected Nomi does not match the original checkpoint.');
+    const src=await chrome.tabs.sendMessage(Number(selected),{type:'inspect'});
+    if(!src?.snapshot||src.snapshot.site!=='chatgpt'||src.snapshot.url!==cp.sourceUrl||
+       src.snapshot.busy||src.snapshot.complete===false)
+       throw Error('The original ChatGPT conversation is not open and ready.');
+    if(kind==='send'&&src.snapshot.reply!==cp.text)
+       throw Error('Original World Engine response differs; content recovery is blocked.');
+    cp.sourceTab=selected;
+    cp.sourceDocument=src.snapshot.document;
+    cp.sourceReplyKey=src.snapshot.replyKey;
+    await this.checkpoint.save(cp);
+    const id=NomiApiRoom.apiRoomId(roomId);
+    await this.transaction(()=>{
+      const b=this.getBridge();
+      b.running=false;b.mode='api-room';b.phase='uncertain';b.command=null;
+      b.pair=[selected,id];
+      b.heartbeat(selected,src.snapshot);
+      const old=b.tabs[id]||{};
+      const name=b.apiSession?.roomId===roomId?b.apiSession.nomiName:'Nomi';
+      b.apiSession={roomId,nomiUuid:cp.nomiUuid,nomiName:name,roomName:'Recovered API room',
+        pendingReply:'uncertain',sequence:b.apiSession?.sequence||0};
+      b.heartbeat(id,this.snapshot(roomId,name,old));
+    });
     if(kind==='send') {
       if(cp.status==='send_uncertain'&&cp.attemptedIndex!==cp.confirmed+1)
         throw Error('Uncertain chunk index mismatch.');
