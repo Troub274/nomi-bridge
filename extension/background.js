@@ -287,7 +287,7 @@ chrome.alarms.onAlarm.addListener(async alarm => {
 });
 // Observe tab navigation immediately instead of waiting for a potentially
 // missing heartbeat from the old conversation's content script.
-chrome.tabs.onUpdated.addListener((id,changeInfo) => {
+chrome.tabs.onUpdated?.addListener?.((id,changeInfo) => {
   if(!changeInfo.url)return;
   transaction(()=>{
     const selected=String(id);
