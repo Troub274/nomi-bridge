@@ -229,6 +229,45 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
   }).then(reply, error => reply({error: error.message}));
   return true;
 });
+// Retry the selected GPT TAB, not the Nomi room POST. On Edge reload the
+// content script may not yet be installed, so inspect/reinject as needed.
+// Never inject or send to a different ChatGPT conversation URL.
+async function retrySelectedGPTTab(){
+  const state=await transaction(()=>{
+    if(!bridge.running||bridge.mode!=='api-room')return null;
+    const selected=String(bridge.pair?.[0]||'');
+    const trusted=bridge.tabRetry?.expectedUrl||bridge.tabs[selected]?.url;
+    return /^\d+$/.test(selected)&&/^https:\/\/(chatgpt\.com|chat\.openai\.com)\//.test(trusted||'')
+      ?{selected,expectedUrl:trusted}:null;
+  });
+  if(!state)return;
+  let tab;
+  try{tab=await bounded(chrome.tabs.get(Number(state.selected)));}
+  catch{return;}
+  if(tab?.url!==state.expectedUrl){
+    await transaction(()=>{
+      if(bridge.running&&bridge.pair?.[0]===state.selected)
+        bridge.retryGPTTab(state.selected,tab?.url||'',state.expectedUrl);
+    });
+    return;
+  }
+  if(tab.discarded||tab.status==='loading')return;
+  try{
+    let info;
+    try{info=await bounded(chrome.tabs.sendMessage(tab.id,{type:'inspect'}));}catch{}
+    if(!info?.snapshot){
+      await bounded(chrome.scripting.executeScript({target:{tabId:tab.id},files:['content.js']}));
+      info=await bounded(chrome.tabs.sendMessage(tab.id,{type:'inspect'}));
+    }
+    if(info?.snapshot?.url!==state.expectedUrl||info.snapshot.site!=='chatgpt')return;
+    await transaction(()=>{
+      if(bridge.running&&bridge.pair?.[0]===state.selected)
+        bridge.heartbeat(state.selected,{...info.snapshot,window:tab.windowId,browser:'Edge'});
+    });
+  }catch{
+    // A transient sleeping/loading page will be checked on the next alarm.
+  }
+}
 // Wake selected content scripts even when inactive-tab timers are throttled.
 chrome.alarms.create('bridge-wake', {periodInMinutes: 0.5});
 chrome.alarms.onAlarm.addListener(async alarm => {
@@ -241,7 +280,20 @@ chrome.alarms.onAlarm.addListener(async alarm => {
     if(bridge.mode==='api-room' && monitor && !ids.includes(monitor))ids.push(monitor);
     return ids;
   });
-  await Promise.allSettled(ids.map(id => chrome.tabs.sendMessage(Number(id), {type: 'wake'})));
+  await Promise.allSettled([
+    ...ids.map(id => chrome.tabs.sendMessage(Number(id), {type: 'wake'})),
+    retrySelectedGPTTab()
+  ]);
+});
+// Observe tab navigation immediately instead of waiting for a potentially
+// missing heartbeat from the old conversation's content script.
+chrome.tabs.onUpdated.addListener((id,changeInfo) => {
+  if(!changeInfo.url)return;
+  transaction(()=>{
+    const selected=String(id);
+    if(bridge.running&&bridge.mode==='api-room'&&bridge.pair?.[0]===selected)
+      bridge.retryGPTTab(selected,changeInfo.url,bridge.tabs[selected]?.url);
+  }).catch(()=>{});
 });
 chrome.tabs.onRemoved.addListener(id => {
   transaction(() => {
