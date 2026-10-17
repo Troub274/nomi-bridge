@@ -247,6 +247,12 @@ chrome.tabs.onRemoved.addListener(id => {
   transaction(() => {
     const key = String(id);
     if (bridge.pair?.includes(key)) {bridge.phase = 'uncertain'; bridge.stop('A selected chat tab closed. Choose chats and Reset before continuing.');}
+    if (bridge.mode==='api-room' && bridge.apiSession?.monitorTabId===key){
+      bridge.apiSession.monitorTabId='';
+      bridge.apiSession.monitorSeen=0;
+      bridge.apiSession.monitorCount=0;
+      bridge.log('Live Nomi chat closed. Falling back to API room responses until it reconnects.');
+    }
     delete bridge.tabs[key];
   }).catch(() => {});
 });
