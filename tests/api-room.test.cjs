@@ -151,7 +151,7 @@ test('explicit NoReply retries reply request with exponential backoff, not World
   assert.equal(h.b.apiSession.replyLastErrorType,null);
   assert.equal(h.b.apiSession.replyNextRetrySeconds,null);
   assert.match(h.b.events.map(e=>e.text).join('\n'),/Nomi API RoomNomiNotReadyForMessage \(HTTP 400\) after reply attempt 3/);
-  assert.match(h.b.events.map(e=>e.text).join('\n'),/World text was NOT resent/);
+  assert.match(h.b.events.map(e=>e.text).join('\n'),/world text was NOT resent/);
   assert.equal((await h.cp.load(ROOM)).status,'reply_received');
 });
 test('reply request with ambiguous outcome cannot be retried without operator consent',async()=>{
