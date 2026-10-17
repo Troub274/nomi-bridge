@@ -172,3 +172,77 @@ test('read-only API requests retry 8 transient errors; content POSTs never auto 
     assert.equal(count,1);
   }finally{globalThis.fetch=original;}
 });
+
+test('room catalog exposes notes without exposing API credentials',async()=>{
+  const h=harness('hello');
+  h.driver.request=async(path)=>{
+    if(path==='/nomis')return {nomis:[{uuid:NOMI,name:'Gwen'}]};
+    if(path==='/rooms')return {rooms:[{uuid:ROOM,name:'WORLD::Gwen',note:'Hungry after the morning walk',backchannelingEnabled:true,nomis:[{uuid:NOMI,name:'Gwen'}]}]};
+    throw Error('Unexpected '+path);
+  };
+  const catalog=await h.driver.catalog();
+  assert.equal(catalog.rooms[0].note,'Hungry after the morning walk');
+  assert.equal(catalog.rooms[0].backchannelingEnabled,true);
+  assert.deepEqual(catalog.rooms[0].nomiUuids,[NOMI]);
+});
+test('editing room note only changes note, never backchanneling or membership',async()=>{
+  const h=harness('hello');
+  const posts=[],old='You are feeling hungry';
+  let note=old;
+  h.driver.request=async(path,method,body)=>{
+    if(path==='/rooms/'+ROOM && method==='GET')return {room:{uuid:ROOM,name:'WORLD::Gwen',note,backchannelingEnabled:true}};
+    if(path==='/rooms/'+ROOM && method==='PUT'){posts.push(body);note=body.note;return {room:{uuid:ROOM,note}};}
+    throw Error('Unexpected '+path);
+  };
+  const result=await h.driver.updateRoomNote(ROOM,'You are getting sleepy',old);
+  assert.equal(result.updated,true);
+  assert.deepEqual(posts,[{note:'You are getting sleepy'}]);
+  assert.equal(note,'You are getting sleepy');
+  await assert.rejects(()=>h.driver.updateRoomNote(ROOM,'Another state',old));
+  assert.equal(posts.length,1,'stale edit must not overwrite newer room context');
+  await assert.rejects(()=>h.driver.updateRoomNote(ROOM,'x'.repeat(1001),note));
+});
+test('room deletion requires exact name and confirmed DELETE before removing checkpoint',async()=>{
+  const h=harness('hello');
+  const requests=[];
+  h.stop();
+  h.driver.request=async(path,method)=>{
+    requests.push(method+' '+path);
+    if(path==='/nomis')return {nomis:[{uuid:NOMI,name:'Gwen'}]};
+    if(path==='/rooms')return {rooms:[{uuid:ROOM,name:'WORLD::Gwen',note:'World',nomis:[{uuid:NOMI}]}]};
+    if(path==='/rooms/'+ROOM && method==='GET')return {room:{uuid:ROOM,name:'WORLD::Gwen',note:'World'}};
+    if(path==='/rooms/'+ROOM && method==='DELETE')return {};
+    throw Error('Unexpected '+method+' '+path);
+  };
+  await assert.rejects(()=>h.driver.deleteRoom(ROOM,NOMI,'wrong name'));
+  assert.equal(requests.some(p=>p.startsWith('DELETE ')),false);
+  await h.storage.set({['nomiApiCheckpoint:'+ROOM]:{roomId:ROOM,status:'send_uncertain',confirmed:0,total:1}});
+  await assert.rejects(()=>h.driver.deleteRoom(ROOM,NOMI,'WORLD::Gwen'));
+  assert.equal(requests.some(p=>p.startsWith('DELETE ')),false);
+  await h.storage.set({['nomiApiCheckpoint:'+ROOM]:{roomId:ROOM,status:'completed',confirmed:1,total:1}});
+  const result=await h.driver.deleteRoom(ROOM,NOMI,'WORLD::Gwen');
+  assert.equal(result.deleted,true);
+  assert.ok(requests.some(p=>p==='DELETE /rooms/'+ROOM));
+  assert.equal(await h.cp.load(ROOM),null);
+});
+test('deletion never retries an uncertain DELETE and never destroys checkpoint',async()=>{
+  const h=harness('hello');
+  h.stop();
+  await h.storage.set({['nomiApiCheckpoint:'+ROOM]:{roomId:ROOM,status:'completed',confirmed:1,total:1}});
+  let deletions=0;
+  h.driver.request=async(path,method)=>{
+    if(path==='/nomis')return {nomis:[{uuid:NOMI,name:'Gwen'}]};
+    if(path==='/rooms')return {rooms:[{uuid:ROOM,name:'World',nomis:[{uuid:NOMI}]}]};
+    if(path==='/rooms/'+ROOM && method==='GET')return {room:{uuid:ROOM,name:'World',note:'World'}};
+    if(path==='/rooms/'+ROOM && method==='DELETE'){deletions++;throw Error('504 uncertain');}
+    throw Error('Unexpected '+method+' '+path);
+  };
+  await assert.rejects(()=>h.driver.deleteRoom(ROOM,NOMI,'World'));
+  assert.equal(deletions,1);
+  assert.equal((await h.cp.load(ROOM)).status,'completed');
+});
+test('room management is blocked while the bridge runs',async()=>{
+  const h=harness('hello');
+  await assert.rejects(()=>h.driver.updateRoomNote(ROOM,'new','old'));
+  await assert.rejects(()=>h.driver.deleteRoom(ROOM,NOMI,'WORLD::Gwen'));
+});
