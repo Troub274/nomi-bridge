@@ -277,7 +277,12 @@ async function recoverApi(kind){
   if(!window.confirm(warning))return;
   recoveryInProgress=true;renderRecoveryButtons();
   try{
-    const result=await request(kind==='send'?'api-recover-send':'api-recover-reply',{roomId,nomiUuid,chatgptTab});
+    const result=await request(kind==='send'?'api-recover-send':'api-recover-reply',{
+      roomId,nomiUuid,chatgptTab,
+      monitorLive:$('api-monitor-live').checked,
+      monitorTab:$('api-monitor-tab').value,
+      monitorIdleSeconds:Number($('api-monitor-idle').value)||300
+    });
     if(!result.started)throw Error('Recovery did not start.');
     $('api-status').textContent='Recovery requested. Watch the checkpoint and Activity panel for progress.';
   }catch(error){$('api-status').textContent=error.message;}
