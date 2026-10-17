@@ -1,5 +1,17 @@
 # Chat Bridge — Edge extension and Windows desktop app
 
+## Current Edge extension: 0.4.0
+
+**Three modes:** Direct Chat (two chat tabs), Group Chat (ChatGPT and a Nomi group room in Edge), and **API Room** (one ChatGPT tab + a separate persistent Nomi API room).
+
+API Room uses the locally saved Nomi API key. Choose one Nomi, then select or create one room. Each complete ChatGPT turn—including arbitrarily long World Engine output—is sent in lossless, ordered submissions of up to **800 UTF-8 bytes**. After **all** chunks are confirmed, the bridge requests **one Nomi reply** and forwards it to ChatGPT. The Nomi's private chat is untouched. See [API-ROOM-MODE.md](API-ROOM-MODE.md) for setup, limits, and safety precautions.
+
+The older setup/version notes follow below.
+
+---
+
+# Chat Bridge — Edge extension and Windows desktop app
+
 Version 0.2.0 supports ChatGPT ↔ Nomi, ChatGPT ↔ ChatGPT, and Nomi ↔ Nomi. Select **First chat** and **Second chat**, then choose which starts. Both must be different tabs with an existing reply in the starting chat. Nomi destinations retain the 750-character limit; ChatGPT-to-ChatGPT forwards the full reply.
 
 The extension connects tabs in one browser profile. Tabs in that profile share website logins; separate tabs do not provide separate accounts. For different accounts, use the standalone Windows app, which opens two independent Edge profiles. See [desktop instructions](desktop/README.md). The portable app package is `desktop/dist/ChatBridge-Windows.zip`; the updated extension package is `ChatBridge-Edge.zip`.

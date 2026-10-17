@@ -47,14 +47,14 @@ function chunkGroupText(text) {
 const BaseBridge = typeof module !== 'undefined' ? require('./engine.js').Bridge : globalThis.Bridge;
 class GroupBridge extends BaseBridge {
   start(data) {
-    const mode = data.mode === 'group' ? 'group' : 'direct';
+    const mode = ['direct','group','api-room'].includes(data.mode) ? data.mode : 'direct';
     if (this.running) throw Error('Stop before changing modes or tabs.');
     if (this.phase === 'uncertain') throw Error('Check the chats, then Reset after an uncertain action.');
     const pair = data.tabs || [];
     if (mode !== 'group') {
       if (pair.some(id => this.tabs[id]?.room)) throw Error('Select Group room mode for a Nomi group chat.');
       if (this.mode === 'group') super.reset();
-      this.mode = 'direct'; return super.start(data);
+      this.mode = mode; return super.start(data);
     }
     if (pair.length !== 2 || pair[0] === pair[1] || this.tabs[pair[0]]?.site !== 'chatgpt' || !this.tabs[pair[1]]?.room) throw Error('Group mode needs ChatGPT first and a Nomi group room second.');
     for (const id of pair) {

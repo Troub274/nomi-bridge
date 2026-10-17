@@ -32,7 +32,7 @@ class Bridge {
     if (!Array.isArray(pair) || pair.length !== 2 || !pair[0] || !pair[1] || pair[0] === pair[1]) throw Error('Select two different chat tabs.');
     pair.forEach(id => {
       const tab = this.tabs[id];
-      if (!tab || !['chatgpt', 'nomi'].includes(tab.site) || this.clock() - tab.seen > 90) throw Error('Select two connected chat tabs.');
+      if (!tab || !['chatgpt', 'nomi', 'api-room'].includes(tab.site) || this.clock() - tab.seen > 90) throw Error('Select two connected chat tabs.');
       if (!tab.ready) throw Error(tab.diagnostic || 'Open extension setup and check the chat controls.');
       if (tab.draft) throw Error('Clear the draft in both chats first.');
       if (tab.error) throw Error(tab.error);
@@ -78,7 +78,7 @@ class Bridge {
     }
     if (now - this.startedWait > 900) {this.stop('No completed reply for 15 minutes. Check the chat, then press Play to continue waiting.'); return;}
     const source = this.tabs[this.source];
-    const speaker = source.site === 'nomi' ? 'Nomi' : 'ChatGPT';
+    const speaker = ['nomi', 'api-room'].includes(source.site) ? 'Nomi' : 'ChatGPT';
     if (now - source.seen > 70) {this.reason = 'Waiting for ' + speaker + ' tab to reconnect.'; return;}
     if (source.busy) {this.reason = speaker + ' is still generating a reply.'; return;}
     if (source.complete === false) {this.reason = source.completion || ('Waiting for ' + speaker + ' to finish its response.'); return;}
@@ -87,7 +87,7 @@ class Bridge {
     if (now - source.changed < this.stableSeconds) {this.reason = 'Detected ' + speaker + ' reply; waiting for it to finish changing.'; return;}
     const target = this.pair.find(id => id !== this.source);
     const dest = this.tabs[target];
-    const receiver = dest.site === 'nomi' ? 'Nomi' : 'ChatGPT';
+    const receiver = ['nomi', 'api-room'].includes(dest.site) ? 'Nomi' : 'ChatGPT';
     if (now - dest.seen > 70) {this.reason = 'Waiting for ' + receiver + ' tab to reconnect.'; return;}
     if (!dest.ready) {this.reason = receiver + ' cannot receive yet: ' + (dest.diagnostic || 'check its editor and Send button'); return;}
     if (dest.busy) {this.reason = 'Waiting for ' + receiver + ' to finish generating before sending.'; return;}

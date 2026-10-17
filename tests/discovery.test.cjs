@@ -1,9 +1,11 @@
 const {test}=require('node:test'),assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs');
 const {GroupBridge}=require('../extension/group.js');
+const NomiApiDriver=class {constructor(){} touch(){} publicState(){return null;} pump(){} stopWaiting(){}};
+
 test('discovers existing tabs, injects only missing scripts and lists sleeping tabs without refreshing',async()=>{
  let listener;const injected=[];const connected=new Set([1]);
  const tabs=[1,2,3].map(id=>({id,url:'https://chatgpt.com/c/'+id,title:'Chat '+id,windowId:1,discarded:id===3}));
- const context={GroupBridge,setTimeout,clearTimeout,importScripts(){},chrome:{
+ const context={NomiApiDriver,queueMicrotask,GroupBridge,setTimeout,clearTimeout,importScripts(){},chrome:{
   runtime:{onMessage:{addListener:fn=>listener=fn},getURL:()=> 'chrome-extension://bridge/'},
   storage:{session:{get:async()=>({}),set:async()=>{}}},alarms:{create(){},onAlarm:{addListener(){}}},
   scripting:{executeScript:async({target,files})=>{assert.deepEqual(Array.from(files),['content.js']);injected.push(target.tabId);connected.add(target.tabId);}},
@@ -18,7 +20,7 @@ test('discovers existing tabs, injects only missing scripts and lists sleeping t
 
 test('an unresponsive tab cannot block the dropdown or Stop',async()=>{
  let listener;const timers=[];
- const context={GroupBridge,setTimeout:(fn,ms)=>{const t=setTimeout(fn,ms);timers.push(t);return t;},clearTimeout,importScripts(){},chrome:{
+ const context={NomiApiDriver,queueMicrotask,GroupBridge,setTimeout:(fn,ms)=>{const t=setTimeout(fn,ms);timers.push(t);return t;},clearTimeout,importScripts(){},chrome:{
  runtime:{onMessage:{addListener:fn=>listener=fn},getURL:()=> 'chrome-extension://bridge/'},storage:{session:{get:async()=>({}),set:async()=>{}}},alarms:{create(){},onAlarm:{addListener(){}}},
  tabs:{query:async()=>[{id:1,url:'https://chatgpt.com/c/1',title:'Frozen tab'}],sendMessage:()=>new Promise(()=>{}),onRemoved:{addListener(){}}},scripting:{executeScript:()=>new Promise(()=>{})}}};
  vm.runInNewContext(fs.readFileSync(require.resolve('../extension/background.js'),'utf8'),context);
