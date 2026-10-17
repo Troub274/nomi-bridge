@@ -119,7 +119,21 @@ class Bridge {
     if (source.busy) {this.reason = speaker + ' is still generating a reply.'; return;}
     if (source.complete === false) {this.reason = source.completion || ('Waiting for ' + speaker + ' to finish its response.'); return;}
     if (!source.reply) {this.reason = 'No ' + speaker + ' reply detected. Check its reply preview.'; return;}
-    if (this.phase === 'reply' && source.replyKey === this.baseline) {this.reason = 'Waiting for a new ' + speaker + ' reply. The detected reply has not changed.'; return;}
+    if (this.phase === 'reply' && source.replyKey === this.baseline) {
+      // A completed API-room -> GPT delivery is not proof that GPT actually
+      // generated its next turn. Surface this distinct failure mode rather
+      // than presenting endless "listening" while new Nomi events accumulate.
+      if (this.mode === 'api-room' && source.site === 'chatgpt' &&
+          this.lastDelivery?.to === 'chatgpt' && now - this.startedWait >= 45) {
+        const others=Object.entries(this.tabs).filter(([id,tab])=>
+          id!==this.source&&tab.site==='chatgpt'&&now-tab.seen<90);
+        this.reason='ChatGPT has not produced a NEW reply after the last bridge delivery ('+
+          Math.floor(now-this.startedWait)+'s). Selected GPT tab: '+this.source+'. '+
+          (others.length?'Other ChatGPT tabs are also connected; verify the correct tab is selected. ':'')+
+          'The previous [listening] response was already delivered. No further private-chat messages will be forwarded until GPT explicitly issues another [listening].';
+      } else this.reason='Waiting for a new '+speaker+' reply. The detected reply has not changed.';
+      return;
+    }
     if (now - source.changed < this.stableSeconds) {this.reason = 'Detected ' + speaker + ' reply; waiting for it to finish changing.'; return;}
     const target = this.pair.find(id => id !== this.source);
     const dest = this.tabs[target];
