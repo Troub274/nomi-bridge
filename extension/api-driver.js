@@ -209,6 +209,7 @@ class NomiApiDriver {
     const s=this.getBridge()?.apiSession;
     return s?{roomName:s.roomName,nomiName:s.nomiName,pendingReply:s.pendingReply,progress:s.progress||null,
       monitorEnabled:!!s.monitorEnabled,monitorConnected:this.isLiveAvailable(s),
+      effectiveMode:this.isLiveAvailable(s)?'live':'room-only',
       monitorTab:s.monitorTabId||null,monitorCount:s.monitorCount||0,
       monitorIdleSeconds:s.monitorIdleSeconds||300,
       roomReplyRequests:s.roomReplyRequests||0}:null;
@@ -497,6 +498,17 @@ class NomiApiDriver {
     if(this.inFlight||!b?.running||b.mode!=='api-room')return;
     const s=b.apiSession,id=b.pair?.[1];
     if(!s||id!==NomiApiRoom.apiRoomId(s.roomId))return;
+    // Keep the effective mode explicit, without disabling the monitor.
+    // Later messages can automatically restore private-chat observation.
+    const nextMode=this.isLiveAvailable(s)?'live':'room-only';
+    if(s.monitorEffectiveMode!==nextMode){
+      if(s.monitorEffectiveMode){
+        b.log(nextMode==='live'
+          ? 'Live private-chat monitoring restored; observing Test again.'
+          : 'Private chat inactive/unavailable; continuing in API-room-only mode.');
+      }
+      s.monitorEffectiveMode=nextMode;
+    }
     const cmd=b.command;
     if(b.phase==='send'&&cmd?.target===id) {
       if(cmd.claimed)return;
@@ -578,19 +590,28 @@ class NomiApiDriver {
           }
         } catch(error){await this.fail('Live observation delivery halted: '+error.message);}
         finally{this.inFlight=false;queueMicrotask(()=>void this.pump());}
-      } else if(!cp && s.listenDeadline && Date.now()>=s.listenDeadline){
-        // A bounded [listening] poll expired. It is NOT a Nomi message and
-        // MUST NOT acknowledge, skip or consume the incomplete exchange.
+      } else if((!cp||['completed','abandoned'].includes(cp.status))&&s.listenDeadline&&
+          (!this.isLiveAvailable(s)||Date.now()>=s.listenDeadline)){
+        // A bounded [listening] poll expired, or live monitoring has
+        // fallen back to API-room-only operation. A COMPLETED world
+        // checkpoint must not prevent the timeout from firing.
+        // No Nomi API request, cursor advance, or transcript discard.
         this.inFlight=true;
         try {
           const recent=await this.observer.history(s.roomId);
           const unpaired=recent.filter(e=>e.channel==='live'&&e.seq>(s.monitorLastSeq||0));
+          const roomOnly=!this.isLiveAvailable(s);
           await this.publishObservation(s.roomId,
-            'LISTEN CHECK COMPLETE — INTERNAL BRIDGE STATUS, NOT NOMI.\n'+
-            'No new complete User / Nomi round trip was observed in the last 12 seconds.\n'+
+            (roomOnly?'ROOM-ONLY FALLBACK ACTIVE':'LISTEN CHECK COMPLETE')+
+            ' — INTERNAL BRIDGE STATUS, NOT NOMI.\n'+
+            (roomOnly
+              ? 'Private chat monitoring is disabled, disconnected or inactive. The World Engine remains running in API-room-only operation.\n'
+              : 'No new complete User / Nomi round trip was observed in the last 12 seconds.\n')+
             (unpaired.length?'There are '+unpaired.length+' unacknowledged live message(s); the current incomplete exchange is still buffered.\n':'No newer private-chat messages have been observed.\n')+
-            'No Nomi API request was made, and no private-chat messages were discarded.\n'+
-            'You may send [listening] again for the next completed exchange or [say room] to advance the world.');
+            'No Nomi API request was made by this check, and no private-chat messages were discarded.\n'+
+            (roomOnly
+              ? 'Send [say room] with a world event to receive a Nomi API-room reply. Live monitoring resumes automatically when its tab and fresh conversation activity return.'
+              : 'You may send [listening] again for the next completed exchange or [say room] to advance the world.'));
           s.listenDeadline=0;
         } catch(error){await this.fail('Listen check halted: '+error.message);}
         finally{this.inFlight=false;queueMicrotask(()=>void this.pump());}
