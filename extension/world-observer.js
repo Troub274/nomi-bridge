@@ -127,10 +127,10 @@ function parseWorldCommand(text) {
   if (directives.length>1)
     return {kind:'invalid',reason:'Multiple bridge commands in one reply. Use one command per response.'};
   if (directives.length===1&&directives[0]>0){
-    const pos=directives[0],preamble=rawLines.slice(0,pos).join('\n');
+    const pos=directives[0];
+    // Inline references such as "I checked [tail]" are prose, NOT commands.
+    // Only lines consisting entirely of an actionable directive are counted.
     const suffix=rawLines.slice(pos).join('\n').trim();
-    if (/\[(?:say|wait|listening|tail|history|play|pause|invite|help)\b[^\]\r\n]{0,40}\]/i.test(preamble))
-      return {kind:'invalid',reason:'Bridge command appears in the preamble; remove extra commands.'};
     const parsed=parseWorldCommand(suffix);
     return parsed.kind==='invalid'?parsed:{...parsed,ignoredPreamble:true};
   }
