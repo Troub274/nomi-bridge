@@ -466,7 +466,8 @@ test('a harmless ChatGPT reload in API mode retains session and ignores stale GP
   h.b.heartbeat(GPT_ID,newSnapshot);
   assert.equal(h.b.running,true);
   assert.notEqual(h.b.phase,'uncertain');
-  assert.equal(h.b.baseline,'reload-key');
+  assert.equal(h.b.source,virtual,'protocol feedback is still pending for delivery to GPT');
+  assert.equal(h.b.baseline,'','a non-speaking GPT tab reload must not change the virtual-room reply baseline');
   assert.equal(h.b.command,null);
 });
 
