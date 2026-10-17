@@ -207,7 +207,8 @@ class NomiApiDriver {
     return s?{roomName:s.roomName,nomiName:s.nomiName,pendingReply:s.pendingReply,progress:s.progress||null,
       monitorEnabled:!!s.monitorEnabled,monitorConnected:this.isLiveAvailable(s),
       monitorTab:s.monitorTabId||null,monitorCount:s.monitorCount||0,
-      monitorIdleSeconds:s.monitorIdleSeconds||300}:null;
+      monitorIdleSeconds:s.monitorIdleSeconds||300,
+      roomReplyRequests:s.roomReplyRequests||0}:null;
   }
   isLiveAvailable(s=this.getBridge()?.apiSession) {
     return !!(s?.monitorEnabled&&s.monitorCount>0&&s.monitorSeen&&
@@ -312,6 +313,14 @@ class NomiApiDriver {
       }
       tryNumber++;
       await this.checkpoint.replyAttempt(cp);
+      await this.transaction(()=>{
+        const b=this.getBridge();
+        if(b.apiSession?.roomId===cp.roomId){
+          b.apiSession.roomReplyRequests=(b.apiSession.roomReplyRequests||0)+1;
+          b.log('Nomi API /chat/request attempt '+tryNumber+
+            ' (session total '+b.apiSession.roomReplyRequests+').');
+        }
+      });
       try {
         const text=NomiApiRoom.nomiReplyText(await this.request('/rooms/'+cp.roomId+'/chat/request',
           'POST',{nomiUuid:cp.nomiUuid}));
