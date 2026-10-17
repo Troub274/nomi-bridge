@@ -676,7 +676,7 @@ test('world sends do not consume the listening backlog; one subsequent complete 
   assert.match(h.b.tabs[virtual].reply,/Yes, please/);
   assert.equal(replyRequests,0);
   assert.equal(s.monitorLastSeq,0);
-  assert.equal(s.monitorPendingSeq,6);
+  assert.equal(s.monitorPendingSeq,7,'the room event has its own sequence number');
   await h.driver.forwarded(ROOM);
-  assert.equal(s.monitorLastSeq,6);
+  assert.equal(s.monitorLastSeq,7);
 });
