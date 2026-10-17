@@ -191,7 +191,7 @@ class NomiApiDriver {
     s.monitorPendingSeq=0;
     s.monitorWorldStartSeq=0;
     s.listenDeadline=0;
-    s.monitorStandingListen=false;
+    s.listenRequestPending=false;
     if(s.monitorEnabled&&s.monitorTabId){
       if(!/^\d+$/.test(s.monitorTabId))throw Error('Invalid Nomi private-chat tab ID.');
       const tab=await chrome.tabs.get(Number(s.monitorTabId));
@@ -211,7 +211,7 @@ class NomiApiDriver {
     return s?{roomName:s.roomName,nomiName:s.nomiName,pendingReply:s.pendingReply,progress:s.progress||null,
       monitorEnabled:!!s.monitorEnabled,monitorConnected:this.isLiveAvailable(s),
       effectiveMode:this.isLiveAvailable(s)?'live':'room-only',
-      listeningArmed:!!s.monitorStandingListen,
+      listenRequestPending:!!s.listenRequestPending,
       lastDeliveredSeq:s.monitorLastSeq||0,
       pendingDeliverySeq:s.monitorPendingSeq||0,
       monitorTab:s.monitorTabId||null,monitorCount:s.monitorCount||0,
@@ -455,12 +455,10 @@ class NomiApiDriver {
       return true;
     }
     if(s.protocolFailures)s.protocolFailures=0;
-    // [listening] arms a persistent read-only subscription. It remains
-    // armed after the first acknowledged round trip, until GPT explicitly
-    // chooses [wait], [say room] or another non-observation operation.
-    // [tail]/[history] are non-destructive peeks and leave it armed.
-    if(parsed.kind==='listening')s.monitorStandingListen=true;
-    if(parsed.kind==='wait'||parsed.kind==='chat')s.monitorStandingListen=false;
+    // One-shot protocol: one [listening] command yields ONE catch-up
+    // packet after a complete User->Nomi round trip, or a timeout/fallback
+    // status. Never subscribe or emit later messages without another command.
+    s.listenRequestPending=parsed.kind==='listening';
     if(parsed.kind==='chat') {
       await this.transaction(()=>{
         const bridge=this.getBridge();
@@ -478,6 +476,9 @@ class NomiApiDriver {
       bridge.apiSession.pendingReply='observation_pending';
     });
     if(parsed.kind==='listening'||parsed.kind==='wait'){
+      if(parsed.kind==='listening')
+        b.log('One-shot [listening] accepted: waiting for a complete User / Nomi exchange since cursor #'+
+          (s.monitorLastSeq||0)+'.');
       const recent=await this.observer.history(s.roomId);
       const exchange=s.monitorEnabled
         ? completedLiveExchange(recent,s.monitorLastSeq||0)
@@ -522,48 +523,6 @@ class NomiApiDriver {
       s.monitorEffectiveMode=nextMode;
     }
     const cmd=b.command;
-    // Standing [listening]: deliver each NEW completed User->Nomi exchange
-    // while GPT has not yet issued a new command. We wait for a quiet,
-    // complete GPT editor to avoid interrupting its own response. Never
-    // advance the observation cursor until ChatGPT confirms the message.
-    if(s.monitorStandingListen && s.monitorEnabled && !this.inFlight &&
-       !s.monitorPendingSeq && b.phase==='reply' && b.source===b.pair?.[0] &&
-       !cmd && b.clock()-b.startedWait>=5){
-      const gpt=b.tabs[b.source];
-      if(gpt?.ready && !gpt.busy && gpt.complete!==false && !gpt.draft &&
-         gpt.replyKey===b.baseline && b.clock()-gpt.seen<70){
-        const exchange=completedLiveExchange(await this.observer.history(s.roomId),
-          s.monitorLastSeq||0);
-        if(exchange.events.length){
-          this.inFlight=true;
-          try{
-            await this.transaction(()=>{
-              const current=this.getBridge(),ss=current.apiSession,g=current.tabs[current.source];
-              if(!current.running||current.mode!=='api-room'||current.phase!=='reply'||
-                 !ss?.monitorStandingListen||ss.monitorPendingSeq||
-                 current.source!==current.pair?.[0]||
-                 g?.replyKey!==current.baseline||g.busy||g.complete===false||g.draft)
-                return;
-              const prior=current.tabs[id]||{};
-              current.source=id;
-              current.phase='reply';
-              current.baseline=prior.replyKey||'';
-              current.startedWait=current.clock();
-              ss.pendingReply='observation_pending';
-              current.log('Standing [listening]: new complete private-chat round trip detected. Delivering catch-up to GPT.');
-            });
-            if(this.getBridge().source===id){
-              const report=this.observer.format(exchange.events,
-                'EVERY COMPLETE USER / NOMI MESSAGE SINCE PREVIOUS LISTEN',28000)+
-                (exchange.truncated?'\n[Additional completed exchanges remain queued for the next delivery.]':'');
-              await this.publishObservation(s.roomId,report,exchange.cursor);
-            }
-          }catch(error){await this.fail('Standing listen delivery halted: '+error.message);}
-          finally{this.inFlight=false;queueMicrotask(()=>void this.pump());}
-          return;
-        }
-      }
-    }
     if(b.phase==='send'&&cmd?.target===id) {
       if(cmd.claimed)return;
       this.inFlight=true;this.waitCancelled=false;
@@ -575,7 +534,7 @@ class NomiApiDriver {
         if(s.protocolFailures)s.protocolFailures=0;
         if(parsed.kind!=='room'||!parsed.text.trim())
           throw Error('Use [say room] followed by a world message, or [listening], [tail], [history], [wait].');
-        s.monitorStandingListen=false;
+        s.listenRequestPending=false;
         const info=await chrome.tabs.sendMessage(Number(cmd.source),{type:'inspect'});
         const verified=await this.transaction(()=>this.getBridge().validateSource(cmd.id,info?.snapshot));
         if(!verified)return;
@@ -755,7 +714,7 @@ class NomiApiDriver {
         monitorSeen:0,monitorCount:0,monitorLastActivity:previous?.monitorLastActivity||0,
         monitorLastSeq:previous?.monitorLastSeq||0,
         monitorPendingSeq:previous?.monitorPendingSeq||0,
-        monitorStandingListen:previous?.monitorStandingListen||false,
+        listenRequestPending:previous?.listenRequestPending||false,
         monitorWorldStartSeq:previous?.monitorWorldStartSeq||0,
         listenDeadline:previous?.listenDeadline||0,
         monitorIdleSeconds:Math.max(60,Math.min(3600,Number(data.monitorIdleSeconds)||300))};
@@ -821,8 +780,13 @@ class NomiApiDriver {
       s.monitorPendingSeq=0;
       b.log('Live catch-up confirmed through event #'+s.monitorLastSeq+'.');
     }
-    if(s?.roomId===roomId&&['observation_delivering','observation_pending','protocol_feedback'].includes(s.pendingReply))
+    if(s?.roomId===roomId&&['observation_delivering','observation_pending','protocol_feedback'].includes(s.pendingReply)){
       s.pendingReply='none';
+      if(s.listenRequestPending){
+        s.listenRequestPending=false;
+        b.log('One-shot [listening] reply confirmed to GPT. Awaiting a NEW GPT command.');
+      }
+    }
     const cp=await this.checkpoint.load(roomId);
     if(cp?.status==='reply_received') {
       await this.checkpoint.delivered(cp);
