@@ -62,7 +62,8 @@ class Bridge {
     const old = this.tabs[id];
     const changed = !old || old.replyKey !== snapshot.replyKey || old.reply !== snapshot.reply || old.busy !== snapshot.busy || old.complete !== snapshot.complete || old.roomKey !== snapshot.roomKey || old.autoChat !== snapshot.autoChat || old.userTurn !== snapshot.userTurn;
     this.tabs[id] = {...snapshot, id, seen: this.clock(), changed: changed ? this.clock() : old.changed};
-    if (this.pair?.includes(id) && this.phase !== 'idle' && old && (old.url !== snapshot.url || old.document !== snapshot.document)) {
+    if (this.running && this.pair?.includes(id) && this.phase !== 'idle' && old &&
+        (old.url !== snapshot.url || old.document !== snapshot.document)) {
       // A harmless reload in API mode is NOT an uncertain Nomi API POST.
       // Never re-use the previous GPT answer after the page reload.
       if (this.mode === 'api-room' && old.url === snapshot.url && this.phase !== 'send') {
