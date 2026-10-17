@@ -341,17 +341,20 @@ class NomiApiDriver {
       state.log('Forwarding live/world observations to GPT.');
     });
   }
-  async deliverObservations(roomId,kind='tail'){
-    const b=this.getBridge(),s=b.apiSession;
-    const entries=kind==='history'?await this.observer.history(roomId):
-      kind==='listening'? (await this.observer.tail(roomId,10)).filter(e=>e.channel==='live').slice(-2):
+  async deliverObservations(roomId,kind='tail',page=1){
+    const s=this.getBridge().apiSession;
+    const history=kind==='history'?await this.observer.historyPage(roomId,page):null;
+    const entries=history?history.events:
+      kind==='listening'?(await this.observer.tail(roomId,10)).filter(e=>e.channel==='live').slice(-2):
       await this.observer.tail(roomId,10);
     const last=entries.at(-1);
     if(last)s.monitorLastSeq=Math.max(s.monitorLastSeq||0,last.seq);
-    const intro=kind==='history'?'WORLD ENGINE HISTORY':
+    const intro=history?'WORLD ENGINE HISTORY page '+history.page+'/'+history.pages:
       kind==='listening'?'LATEST PRIVATE CHAT OBSERVATION':'LAST 10 WORLD/LIVE MESSAGES';
-    const message=entries.length?this.observer.format(entries,intro):
-      intro+' — No messages have been observed yet. If the private chat is closed, [say room] produces a Nomi room reply.\n';
+    let message=entries.length?this.observer.format(entries,intro,history?28000:85000):
+      intro+' — No messages at this offset. If the private chat is closed, [say room] produces a Nomi room reply.\n';
+    if(history && history.page<history.pages)
+      message+='\n[Earlier retained events available: ask [history '+(history.page+1)+'] to continue.]';
     await this.publishObservation(roomId,message);
   }
   async handleWorldControl(cmd,s) {
@@ -391,7 +394,7 @@ class NomiApiDriver {
           bridge.log('Listening for fresh private-chat activity.');
         });
       }
-    }else await this.deliverObservations(s.roomId,parsed.kind);
+    }else await this.deliverObservations(s.roomId,parsed.kind,parsed.page||1);
     return true;
   }
   async pump() {
