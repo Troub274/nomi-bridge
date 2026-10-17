@@ -97,7 +97,7 @@ class NomiApiDriver {
   }
   publicState() {
     const s=this.getBridge()?.apiSession;
-    return s ? {roomName:s.roomName,nomiName:s.nomiName,pendingReply:s.pendingReply}:null;
+    return s ? {roomName:s.roomName,nomiName:s.nomiName,pendingReply:s.pendingReply,progress:s.progress || null}:null;
   }
   async fail(message) {
     await this.transaction(()=>{
@@ -139,12 +139,26 @@ class NomiApiDriver {
         if (!allowed) return;
         const chunks=NomiApiRoom.apiChunks(cmd.text);
         if (!chunks.length) throw Error('Empty ChatGPT reply cannot be sent.');
-        for (const chunk of chunks) await this.request('/rooms/'+session.roomId+'/chat','POST',{messageText:chunk});
+        await this.transaction(()=>{
+          const b=this.getBridge();
+          b.apiSession.progress={total:chunks.length,confirmed:0};
+        });
+        for (let i=0; i<chunks.length; i++) {
+          await this.request('/rooms/'+session.roomId+'/chat','POST',{messageText:chunks[i]});
+          // Acknowledged progress is persisted without ever re-sending prior chunks.
+          await this.transaction(()=>{
+            const b=this.getBridge();
+            b.apiSession.progress.confirmed=i+1;
+            if (b.command?.id===cmd.id) b.command.created=b.clock();
+            b.log('API room chunk '+(i+1)+'/'+chunks.length+' confirmed.');
+          });
+        }
         await this.transaction(()=>{
           const b=this.getBridge();
           if (b.mode!=='api-room' || b.apiSession?.roomId!==session.roomId) return;
           b.acknowledge(id,{id:cmd.id});
           b.apiSession.pendingReply='ready';
+          delete b.apiSession.progress;
           b.heartbeat(id,this.snapshot(session.roomId,session.nomiName,b.tabs[id],{busy:true}));
           b.log('Message committed to Nomi API room; reply pending.');
         });
