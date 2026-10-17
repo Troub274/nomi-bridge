@@ -144,6 +144,7 @@ class NomiApiDriver {
           b.apiSession.progress={total:chunks.length,confirmed:0};
         });
         for (let i=0; i<chunks.length; i++) {
+          if (!this.getBridge().running) throw Error('Stopped between API chunks; partial message requires inspection.');
           await this.request('/rooms/'+session.roomId+'/chat','POST',{messageText:chunks[i]});
           // Acknowledged progress is persisted without ever re-sending prior chunks.
           await this.transaction(()=>{
