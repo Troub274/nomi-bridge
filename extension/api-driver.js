@@ -384,8 +384,8 @@ class NomiApiDriver {
     const entries=history?history.events:
       kind==='listening'?(await this.observer.tail(roomId,10)).filter(e=>e.channel==='live').slice(-2):
       await this.observer.tail(roomId,10);
-    const last=entries.at(-1);
-    if(last)s.monitorLastSeq=Math.max(s.monitorLastSeq||0,last.seq);
+    // Reading [tail]/[history] is a non-destructive lookback; only
+    // delivery of a complete live exchange advances the live cursor.
     const intro=history?'WORLD ENGINE HISTORY page '+history.page+'/'+history.pages:
       kind==='listening'?'LATEST PRIVATE CHAT OBSERVATION':'LAST 10 WORLD/LIVE MESSAGES';
     let message=entries.length?this.observer.format(entries,intro,history?28000:85000):
@@ -435,12 +435,13 @@ class NomiApiDriver {
     });
     if(parsed.kind==='listening'||parsed.kind==='wait'){
       const recent=await this.observer.history(s.roomId);
-      const fresh=s.monitorEnabled
-        ? recent.filter(e=>e.channel==='live'&&e.seq>(s.monitorLastSeq||0))
-        : [];
-      if(fresh.length){
-        s.monitorLastSeq=fresh.at(-1).seq;
-        await this.publishObservation(s.roomId,this.observer.format(fresh.slice(-10),'NEW LIVE CHAT OBSERVATIONS'));
+      const exchange=s.monitorEnabled
+        ? completedLiveExchange(recent,s.monitorLastSeq||0)
+        : {events:[],cursor:s.monitorLastSeq||0};
+      if(exchange.events.length){
+        await this.publishObservation(s.roomId,
+          this.observer.format(exchange.events.slice(-20),'NEW COMPLETE USER / NOMI EXCHANGE',16000));
+        s.monitorLastSeq=exchange.cursor;
       }else {
         // [wait] and [listening] are passive. No synthetic GPT response
         // and no API reply request when live chat is unavailable.
@@ -448,7 +449,7 @@ class NomiApiDriver {
           const bridge=this.getBridge();
           if(bridge.apiSession?.roomId===s.roomId)bridge.apiSession.pendingReply='live_wait';
           bridge.log(s.monitorEnabled
-            ? 'Listening for new private-chat activity. No API room reply requested.'
+            ? 'Listening for a complete User / Nomi exchange; user-only messages are buffered.'
             : 'Waiting for new activity. Live chat monitoring is disabled; no API room reply requested.');
         });
       }
@@ -498,22 +499,23 @@ class NomiApiDriver {
       // if the real conversation becomes inactive. Never replay old history
       // as if it were a new live message.
       const cp=await this.checkpoint.load(s.roomId);
-      const fresh=s.monitorEnabled
-        ? (await this.observer.history(s.roomId)).filter(e=>e.channel==='live'&&e.seq>(s.monitorLastSeq||0))
-        : [];
-      if(fresh.length) {
+      const exchange=s.monitorEnabled
+        ? completedLiveExchange(await this.observer.history(s.roomId),s.monitorLastSeq||0)
+        : {events:[],cursor:s.monitorLastSeq||0};
+      if(exchange.events.length) {
         this.inFlight=true;
         try {
-          const observation=this.observer.format(fresh.slice(-10),'NEW PRIVATE CHAT ACTIVITY',16000);
-          s.monitorLastSeq=fresh.at(-1).seq;
+          const observation=this.observer.format(exchange.events.slice(-20),
+            'NEW COMPLETE USER / NOMI EXCHANGE',16000);
           if(cp?.status==='awaiting_reply'){
-            // A real new live observation resolves the world event without
-            // making any API /chat/request call. Persist it until GPT ack.
+            // Persist both sides before forwarding to GPT; do not request
+            // an API room response when the live Nomi actually answered.
             await this.checkpoint.replyCommitted(cp,observation);
             await this.completeReply(cp,observation);
           } else {
             await this.publishObservation(s.roomId,observation);
           }
+          s.monitorLastSeq=exchange.cursor;
         } catch(error){await this.fail('Live observation delivery halted: '+error.message);}
         finally{this.inFlight=false;queueMicrotask(()=>void this.pump());}
       } else if(cp?.status==='awaiting_reply'&&!this.isLiveAvailable(s)){
