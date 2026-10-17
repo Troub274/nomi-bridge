@@ -1,4 +1,4 @@
-importScripts('engine.js', 'group.js', 'api-room.js', 'api-driver.js');
+importScripts('engine.js', 'group.js', 'api-room.js', 'api-checkpoint.js', 'api-driver.js');
 let bridge;
 let queue = Promise.resolve();
 const apiDriver = new NomiApiDriver(() => bridge, transaction);
@@ -134,9 +134,19 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
   // The dashboard runs in a tab too. Authenticate by extension URL, not absence of sender.tab.
   const control = sender.url?.startsWith(chrome.runtime.getURL(''));
   if (control && ['/api/stop','/api/reset'].includes(message.path)) startupGeneration++;
+  if (control && message.path==='/api/stop') apiDriver.stopWaiting();
   const ticket = control && message.path === '/api/play' ? ++startupGeneration : null;
   const preparation = ticket !== null ? wakeSelected(message.data || {},ticket) : control && message.path === '/api/state' ? discoverTabs() : Promise.resolve();
-  preparation.then(() => transaction(async () => {
+  preparation.then(async () => {
+    // A recovery may wait indefinitely for an explicit Nomi not-ready response.
+    // Start it outside the serialized transaction queue so Stop/status still work.
+    if (control && ['/api/api-recover-send','/api/api-recover-reply'].includes(message.path)) {
+      await load();
+      const data=message.data||{};
+      return apiDriver.startRecovery(data.roomId,
+        message.path==='/api/api-recover-send'?'send':'reply',data);
+    }
+    return transaction(async () => {
     const data = message.data || {};
     if (sender.tab && /^https:\/\/(chatgpt\.com|chat\.openai\.com|(?:[a-z0-9-]+\.)?nomi\.ai)\//.test(sender.url || '')) {
       const tab = String(sender.tab.id);
@@ -155,7 +165,14 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
         if (data.checkOnly && (!bridge.command || !await verifySource(bridge.command))) return {allowed:false};
         return bridge.claim(tab, data.id, data.checkOnly);
       }
-      if (message.path === '/api/ack') return bridge.acknowledge(tab, data);
+      if (message.path === '/api/ack') {
+        const cmd=bridge.command;
+        const shouldCommit=cmd?.id===data.id && cmd.claimed && !data.error &&
+          bridge.mode==='api-room' && bridge.tabs[cmd.source]?.site==='api-room';
+        const result=bridge.acknowledge(tab,data);
+        if (shouldCommit) await apiDriver.forwarded(bridge.apiSession.roomId);
+        return result;
+      }
       throw Error('Unsupported chat request');
     }
     if (!sender.url?.startsWith(chrome.runtime.getURL(''))) throw Error('Unsupported sender');
@@ -175,6 +192,10 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
         return apiDriver.clearKey();
       case '/api/api-config': return apiDriver.configured();
       case '/api/api-catalog': return apiDriver.catalog();
+      case '/api/api-checkpoint': return apiDriver.checkpointState(data.roomId);
+      case '/api/api-abandon':
+        if (apiDriver.inFlight || apiDriver.recoveryScheduled) throw Error('Stop and let the active API operation finish before abandoning.');
+        return apiDriver.abandon(data.roomId);
       case '/api/api-create-room':
         if (bridge.running || apiDriver.inFlight) throw Error('Stop the bridge before creating an API room.');
         return apiDriver.createRoom(data.nomiUuid,data.name);
@@ -186,7 +207,8 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
         return bridge.state();
       default: throw Error('Unsupported control request');
     }
-  })).then(reply, error => reply({error: error.message}));
+    });
+  }).then(reply, error => reply({error: error.message}));
   return true;
 });
 // Wake selected content scripts even when inactive-tab timers are throttled.
