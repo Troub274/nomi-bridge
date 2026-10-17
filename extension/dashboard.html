@@ -6,7 +6,12 @@
 <p class="muted">World Engine sends every world event into the Nomi API room. With monitoring off or no private-chat history available, the Nomi replies in the API room. With live monitoring active, GPT observes the Nomi's private chat instead of requesting room replies.</p>
 <div id="api-monitor-settings">
 <label class="inline-monitor"><input type="checkbox" id="api-monitor-live"> Monitor Nomi live private chat (read-only)</label>
-<label>Private Nomi chat tab<select id="api-monitor-tab"><option value="">Auto-detect selected Nomi when a private chat opens</option></select></label>
+<label>Private Nomi chat tab<select id="api-monitor-tab"><option value="">Auto-detect selected Nomi when a private chat opens</option></select></label><label>Switch back to API-room replies after no live messages for
+<select id="api-monitor-idle">
+<option value="120">2 minutes</option><option value="300" selected>5 minutes</option>
+<option value="900">15 minutes</option><option value="1800">30 minutes</option>
+<option value="3600">60 minutes</option>
+</select></label>
 <p class="muted">When this option is enabled and a private chat is available, the bridge never sends world messages to that chat. Use [say room] to advance her world, [listening] to await new observations, [tail] for the last 10 events, and [history] for the retained journal. When no live chat is available, [say room] requests one Nomi reply in the API room. [say chat] is disabled.</p>
 <p id="api-monitor-status" role="status" class="muted"></p>
 </div>
