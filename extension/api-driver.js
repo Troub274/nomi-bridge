@@ -190,7 +190,7 @@ class NomiApiDriver {
       try {
         const text=NomiApiRoom.nomiReplyText(await this.request('/rooms/'+cp.roomId+'/chat/request',
           'POST',{nomiUuid:cp.nomiUuid}));
-        await this.checkpoint.replyCommitted(cp);
+        await this.checkpoint.replyCommitted(cp,text);
         return text;
       } catch(error) {
         if(this.notReady(error)) {
@@ -211,7 +211,7 @@ class NomiApiDriver {
       const b=this.getBridge(),s=b.apiSession;
       if(b.mode!=='api-room'||s?.roomId!==cp.roomId)return;
       const id=NomiApiRoom.apiRoomId(cp.roomId),prior=b.tabs[id]||{};
-      s.pendingReply='none';delete s.progress;
+      s.pendingReply='delivering';delete s.progress;
       s.sequence=(s.sequence||0)+1;
       b.heartbeat(id,this.snapshot(cp.roomId,s.nomiName,prior,{
         busy:false,reply,replyKey:'api-'+cp.roomId+'-'+s.sequence
@@ -281,7 +281,7 @@ class NomiApiDriver {
       if(!['send_uncertain','planned','sending','paused'].includes(cp.status))
         throw Error('There is no unfinished content send to recover.');
     } else if(kind==='reply') {
-      if(!['reply_uncertain','reply_not_ready','awaiting_reply'].includes(cp.status))
+      if(!['reply_uncertain','reply_not_ready','awaiting_reply','reply_received'].includes(cp.status))
         throw Error('There is no unresolved reply request to recover.');
     } else throw Error('Unknown recovery type.');
     // Require the original exact source reply to still be present. No duplicate turn by accident.
@@ -291,7 +291,7 @@ class NomiApiDriver {
       if(kind==='send') {
         await this.checkpoint.recoverSend(cp,cp.confirmed+1);
         await this.sendChunks(cp,{mustRun:false});
-      } else await this.checkpoint.recoverReply(cp);
+      } else if(cp.status!=='reply_received') await this.checkpoint.recoverReply(cp);
       // A recovered content turn is already in Nomi's room; NEVER POST it again here.
       await this.transaction(()=>{
         const b=this.getBridge();
@@ -302,13 +302,21 @@ class NomiApiDriver {
         b.running=true; // Release reply request, then next GPT turn.
         b.startedWait=b.clock();
       });
-      const reply=await this.requestReply(cp);
+      const reply=cp.status==='reply_received'?cp.reply:await this.requestReply(cp);
       await this.completeReply(cp,reply,true);
       return {recovered:true,checkpoint:this.checkpoint.brief(cp)};
     } catch(error) {
       await this.fail('Recovery halted: '+error.message);
       throw error;
     } finally {this.inFlight=false;queueMicrotask(()=>void this.pump());}
+  }
+  async forwarded(roomId) {
+    const cp=await this.checkpoint.load(roomId);
+    if(cp?.status==='reply_received') {
+      await this.checkpoint.delivered(cp);
+      const b=this.getBridge();
+      if(b.apiSession?.roomId===roomId)b.apiSession.pendingReply='none';
+    }
   }
   async abandon(roomId) {
     if(this.inFlight||this.getBridge()?.running)throw Error('Stop active API operations first.');
