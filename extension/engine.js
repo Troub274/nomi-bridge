@@ -273,6 +273,9 @@ class Bridge {
   state() {
     this.tick();
     return {running: this.running, phase: this.phase, turns: this.turns, reason: this.reason, pair: this.pair,
+      tabRetry:this.tabRetry?{tabId:this.tabRetry.id,expectedUrl:this.tabRetry.expectedUrl,
+        elapsedSeconds:Math.max(0,Math.floor(this.clock()-this.tabRetry.startedAt)),
+        reconnectChecks:this.tabRetry.attempts}:null,
       events: this.events, lastDelivery: this.lastDelivery, tabs: Object.values(this.tabs).filter(t => this.clock() - t.seen < 300)
         .map(t => ({...t, connected: this.clock() - t.seen < 90}))};
   }
