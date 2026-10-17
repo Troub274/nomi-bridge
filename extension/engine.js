@@ -116,7 +116,22 @@ class Bridge {
     const source = this.tabs[this.source];
     const speaker = ['nomi', 'api-room'].includes(source.site) ? 'Nomi' : 'ChatGPT';
     if (now - source.seen > 70) {this.reason = 'Waiting for ' + speaker + ' tab to reconnect.'; return;}
-    if (source.busy) {this.reason = speaker + ' is still generating a reply.'; return;}
+    if (source.busy) {
+      if(this.mode==='api-room' && source.site==='api-room' &&
+         this.apiSession?.pendingReply==='inflight'){
+        const s=this.apiSession;
+        this.reason=s.replyLastErrorType
+          ?'Nomi API room reply pending: last response '+s.replyLastErrorType+
+            (s.replyLastHttpStatus==null?'':' (HTTP '+s.replyLastHttpStatus+')')+
+            ', attempt '+(s.replyAttemptsInTurn||1)+
+            (s.replyNextRetrySeconds==null?'; requesting a new reply.':
+              '; next retry in '+s.replyNextRetrySeconds+'s (exponential backoff).')+
+            ' World text was already delivered; it is not being resent.'
+          :'Waiting for Nomi API room reply request '+(s.replyAttemptsInTurn||1)+
+            ' to finish. World text was already delivered.';
+      } else this.reason=speaker+' is still generating a reply.';
+      return;
+    }
     if (source.complete === false) {this.reason = source.completion || ('Waiting for ' + speaker + ' to finish its response.'); return;}
     if (!source.reply) {this.reason = 'No ' + speaker + ' reply detected. Check its reply preview.'; return;}
     if (this.phase === 'reply' && source.replyKey === this.baseline) {
