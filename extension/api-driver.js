@@ -420,20 +420,30 @@ class NomiApiDriver {
     const info=await chrome.tabs.sendMessage(Number(cmd.source),{type:'inspect'});
     if(!await this.transaction(()=>this.getBridge().validateSource(cmd.id,info?.snapshot)))return true;
     if(parsed.kind==='invalid') {
-      // A malformed tag is never content. Consume the candidate without
-      // creating a checkpoint, calling Nomi, or issuing a synthetic GPT turn.
+      // Never send malformed controls to Nomi. Return actionable protocol
+      // feedback to GPT via the virtual room, so GPT gets another turn to
+      // correct itself rather than waiting forever on an unchanged reply.
+      // Limit consecutive feedback loops to protect unattended operation.
+      let feedback=false,failures=0;
       await this.transaction(()=>{
         const bridge=this.getBridge();
         if(!bridge.claim(id,cmd.id).allowed)return;
-        bridge.command=null;
-        bridge.phase='reply';
-        bridge.source=cmd.source;
-        bridge.baseline=cmd.sourceKey;
-        bridge.startedWait=bridge.clock();
-        bridge.apiSession.pendingReply='protocol_hold';
+        bridge.acknowledge(id,{id:cmd.id});
+        const session=bridge.apiSession;
+        failures=session.protocolFailures=(session.protocolFailures||0)+1;
+        session.pendingReply='protocol_feedback';
         bridge.log('World Engine protocol error: '+parsed.reason+
-          ' Waiting for a corrected GPT reply. Nothing was sent to Nomi.');
+          ' Nothing was sent to Nomi. Attempt '+failures+'/3.');
+        if(failures>=3){
+          session.pendingReply='protocol_hold';
+          bridge.stop('Three consecutive malformed World Engine commands. Nothing was sent to Nomi. Check GPT response formatting, then resume.');
+        } else feedback=true;
       });
+      if(feedback)await this.publishObservation(s.roomId,
+        'WORLD ENGINE COMMAND REJECTED — INTERNAL BRIDGE FEEDBACK, NOT NOMI.\\n'+
+        parsed.reason+'\\nNothing was sent to Nomi. This response is for GPT only.\\n'+
+        'Use ONE command on its own line: [listening], [tail], [history], or [say room] followed by world-event text.\\n'+
+        'You may explain your intent in prose BEFORE the standalone command; command names mentioned inside sentences are not executable.');
       return true;
     }
     if(parsed.kind==='chat') {
@@ -490,6 +500,7 @@ class NomiApiDriver {
         // Otherwise [wait] would be posted literally to the Nomi room.
         if(await this.handleWorldControl(cmd,s))return;
         const parsed=parseWorldCommand(cmd.text);
+        if(s.protocolFailures)s.protocolFailures=0;
         if(parsed.kind!=='room'||!parsed.text.trim())
           throw Error('Use [say room] followed by a world message, or [listening], [tail], [history], [wait].');
         const info=await chrome.tabs.sendMessage(Number(cmd.source),{type:'inspect'});
