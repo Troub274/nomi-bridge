@@ -24,7 +24,7 @@ With API Room mode selected and the world-engine bridge **stopped**, choose one 
 Enable **Monitor Nomi live private chat** in API Room settings and optionally select the Nomi private-chat tab. If the tab is not open yet, the bridge will try to auto-bind it when the URL contains the selected Nomi UUID or matches a previously chosen conversation URL.
 
 - **World messages always go to the API room.** The bridge never writes them to the Nomi's private chat.
-- **When the private-chat tab is connected and has recent new messages:** the bridge does **not** call `POST /rooms/{id}/chat/request` for the just-delivered world event. Instead it forwards recent live Nomi/user observations to ChatGPT so the World Engine can adjust its next turn. The user-selectable inactivity fallback defaults to **5 minutes** (2–60 minutes); merely leaving an idle tab open does not suppress room replies indefinitely.
+- **When the private-chat tab is connected and has recent new messages:** the bridge does **not** immediately call `POST /rooms/{id}/chat/request` for the world event. It waits for genuinely **new** Nomi/user observations, then forwards those to ChatGPT. If the live conversation becomes inactive, it requests exactly one reply for that pending room event instead. The user-selectable inactivity fallback defaults to **5 minutes** (2–60 minutes). An idle tab does not suppress room replies indefinitely.
 - **When there is no usable live conversation history** (tab closed, not yet connected, no recognized messages): the bridge uses normal API-room reply requests. If the tab closes mid-session, monitoring drops immediately and future world turns get API-room replies.
 - **`[say room]`** followed by text delivers that text to the API room with the existing 800-byte chunking and checkpoint rules. Untagged replies are also treated as world-room sends for backward compatibility.
 - **`[listening]`** and **`[wait]`** are strictly passive. They never send content to Nomi, invoke `/chat/request`, or send a synthetic status message back to GPT. With live monitoring enabled, they forward only genuinely new private-chat observations; otherwise they remain idle. This works even when the Live Chat Monitor checkbox is OFF. To generate another world event and get a Nomi reply when live chat is absent, GPT must explicitly issue **`[say room]`** followed by world text.
@@ -36,6 +36,16 @@ The extension keeps the latest **100** events in a separate persistent local jou
 The bridge activity log now identifies actual `/chat/request` attempts separately from observation deliveries. Each attempt appears as `Nomi API /chat/request attempt N`. This makes unintended reply loops auditable without exporting credentials.
 
 **Browser-selector limitation:** live user/Nomi message reading depends on Nomi's current DOM. If the website changes its message CSS classes, the monitor may report zero observed messages and fall back to room replies. This requires a real Edge/Nomi smoke test before relying on unattended monitoring. While no new private-chat messages arrive, `[listening]` can remain idle; the World Engine does not automatically schedule new time-of-day events merely because monitoring is enabled.
+
+## Control-command and recovery fixes (development build)
+
+**Control tags are never Nomi conversation text.** The World Engine may send `[tail]`, `[history]`, `[history 2]`, `[listening]`, or `[wait]` as its entire response. A single enclosing Markdown code fence is tolerated. A malformed tag, a tag mixed with commentary, or a second tag in a `[say room]` body is **not sent to Nomi**. The bridge logs a protocol error and waits for a corrected GPT response. If the dashboard is accidentally in Direct Chat mode, it blocks World Engine command tags from reaching the Nomi private chat.
+
+**Live monitoring never replays stale observations as new Nomi replies.** After a `[say room]` event, while live monitoring is active, the bridge waits for **new** private-chat activity and keeps that room event checkpointed. If the live conversation becomes inactive or closes, it requests one Nomi API-room reply for the already-sent event, without reposting the event. `[wait]` itself remains completely passive, regardless of inactivity, and can stay idle longer than 15 minutes.
+
+**Resume/reload rules:** Stop/Play after a passive `[wait]` does not create or resend a room checkpoint. A harmless ChatGPT page reload at the same URL outside an active send preserves the room session but deliberately ignores the old GPT response. A reload during a potentially active send remains uncertain. The explicit recovery controls restore live monitoring when selected and, if a confirmed event is still awaiting a Nomi response, continue monitoring fresh private-chat activity rather than automatically forcing a room reply. Uncertain POSTs must still be approved individually to prevent duplicates.
+
+The Activity log includes distinct `Nomi API /chat/request attempt` entries; control commands do not produce these entries. The bridge does not change Nomi's private-chat messages.
 
 ## Every turn
 
