@@ -216,7 +216,12 @@ class NomiApiDriver {
       pendingDeliverySeq:s.monitorPendingSeq||0,
       monitorTab:s.monitorTabId||null,monitorCount:s.monitorCount||0,
       monitorIdleSeconds:s.monitorIdleSeconds||300,
-      roomReplyRequests:s.roomReplyRequests||0}:null;
+      roomReplyRequests:s.roomReplyRequests||0,
+      replyAttemptsInTurn:s.replyAttemptsInTurn||0,
+      replyLastErrorType:s.replyLastErrorType||null,
+      replyLastHttpStatus:s.replyLastHttpStatus??null,
+      replyNextRetrySeconds:s.replyNextRetrySeconds??null,
+      replyWaitStartedAt:s.replyWaitStartedAt||null}:null;
   }
   isLiveAvailable(s=this.getBridge()?.apiSession) {
     // The background wake alarm runs every 30 seconds. A background Nomi
@@ -321,6 +326,16 @@ class NomiApiDriver {
     if(cp.confirmed!==cp.total||cp.attemptedIndex!==null)
       throw Error('Cannot request reply before all content posts are confirmed.');
     let delay=1000,tryNumber=0;
+    await this.transaction(()=>{
+      const b=this.getBridge(),s=b?.apiSession;
+      if(s?.roomId===cp.roomId) {
+        s.replyWaitStartedAt=Date.now();
+        s.replyAttemptsInTurn=0;
+        s.replyLastErrorType=null;
+        s.replyLastHttpStatus=null;
+        s.replyNextRetrySeconds=null;
+      }
+    });
     while(true) {
       if(this.waitCancelled||!this.getBridge()?.running) {
         await this.checkpoint.mark(cp,'reply_not_ready','reply_wait_paused');
@@ -332,6 +347,8 @@ class NomiApiDriver {
         const b=this.getBridge();
         if(b.apiSession?.roomId===cp.roomId){
           b.apiSession.roomReplyRequests=(b.apiSession.roomReplyRequests||0)+1;
+          b.apiSession.replyAttemptsInTurn=tryNumber;
+          b.apiSession.replyNextRetrySeconds=null;
           b.log('Nomi API /chat/request attempt '+tryNumber+
             ' (session total '+b.apiSession.roomReplyRequests+').');
         }
@@ -340,11 +357,35 @@ class NomiApiDriver {
         const text=NomiApiRoom.nomiReplyText(await this.request('/rooms/'+cp.roomId+'/chat/request',
           'POST',{nomiUuid:cp.nomiUuid}));
         await this.checkpoint.replyCommitted(cp,text);
+        await this.transaction(()=>{
+          const b=this.getBridge(),s=b?.apiSession;
+          if(s?.roomId===cp.roomId){
+            if(tryNumber>1)b.log('Nomi API room reply succeeded on attempt '+tryNumber+'.');
+            s.replyLastErrorType=null;
+            s.replyLastHttpStatus=null;
+            s.replyNextRetrySeconds=null;
+          }
+        });
         return text;
       } catch(error) {
         if(this.notReady(error)) {
           await this.checkpoint.mark(cp,'reply_not_ready','reply_not_ready',
             {attempt:tryNumber,errorType:error.apiType,httpStatus:error.httpStatus});
+          await this.transaction(()=>{
+            const b=this.getBridge(),s=b?.apiSession;
+            if(s?.roomId===cp.roomId){
+              const type=String(error.apiType||'NotReady').replace(/[^a-zA-Z0-9_-]/g,'').slice(0,80);
+              const code=Number.isInteger(error.httpStatus)?error.httpStatus:null;
+              s.replyLastErrorType=type;
+              s.replyLastHttpStatus=code;
+              s.replyNextRetrySeconds=delay/1000;
+              const waited=Math.floor((Date.now()-(s.replyWaitStartedAt||Date.now()))/1000);
+              b.log('Nomi API '+type+(code===null?'':' (HTTP '+code+')')+
+                ' after reply attempt '+tryNumber+'. Waiting '+(delay/1000)+
+                's before next reply request; elapsed '+waited+
+                's. Original world text was NOT resent.');
+            }
+          });
           await this.delay(delay);
           delay=Math.min(delay*2,30000);
           continue; // Same prompt in room; request a NEW reply only, never resend content.
