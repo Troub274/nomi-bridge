@@ -9,6 +9,9 @@ let apiStartup = false;
 let apiKeyConfigured = false;
 let recoveryCheckpoint = null;
 let recoveryInProgress = false;
+let apiNoteBaseline = '';
+let apiEditorRoomId = '';
+let apiManagementPending = false;
 function savedSelection(site) {try {return localStorage.getItem('bridge-' + site);} catch {return '';}}
 function showError(error) {
   const message = error?.message || String(error);
@@ -60,8 +63,9 @@ function render(state) {
   $('play').disabled = actionPending;
   $('play').textContent = state.running ? '▶ Running — check status' : '▶ Play';
   $('reset').disabled = state.running;
-  for (const id of ['api-nomi','api-room','api-key','save-api-key','clear-api-key','refresh-api','api-room-name','create-api-room']) $(id).disabled = state.running;
+  for (const id of ['api-nomi','api-room','api-key','save-api-key','clear-api-key','refresh-api','api-room-name','api-new-room-description','create-api-room']) $(id).disabled = state.running;
   renderRecoveryButtons();
+  renderRoomManagementButtons();
   $('count').textContent = `${state.turns} messages forwarded`;
   $('status').textContent = state.reason;
   $('status').className = state.running ? 'running' : '';
@@ -114,6 +118,29 @@ function apiRoomOptions(desiredRoom = '') {
   $('api-room').replaceChildren(new Option('Choose an API room…',''), ...rooms.map(r => new Option(r.name,r.uuid)));
   if (rooms.some(r=>r.uuid===old)) $('api-room').value=old;
   else if (rooms.length) $('api-room').value=rooms[0].uuid;
+  showRoomEditor(true);
+}
+function selectedApiRoom(){
+  const id=$('api-room').value,nomiId=$('api-nomi').value;
+  return (apiCatalog?.rooms||[]).find(r=>r.uuid===id&&r.nomiUuids.length===1&&r.nomiUuids[0]===nomiId)||null;
+}
+function renderRoomManagementButtons(){
+  const inactive=!selectedApiRoom()||!!lastState?.running||apiManagementPending||recoveryInProgress;
+  $('api-save-description').disabled=inactive;
+  $('api-delete-room').disabled=inactive;
+}
+function showRoomEditor(force=false){
+  const room=selectedApiRoom();
+  $('api-room-editor').hidden=!room;
+  if(!room){
+    apiEditorRoomId='';apiNoteBaseline='';
+    $('api-room-description').value='';
+  }else if(force||apiEditorRoomId!==room.uuid){
+    apiEditorRoomId=room.uuid;
+    apiNoteBaseline=room.note||'';
+    $('api-room-description').value=apiNoteBaseline;
+  }
+  renderRoomManagementButtons();
 }
 async function loadApi() {
   try {
@@ -122,6 +149,7 @@ async function loadApi() {
     $('api-key-status').textContent = apiKeyConfigured ? 'Saved on this Edge profile' : 'Not configured';
     if (!apiKeyConfigured) {
       apiCatalog=null;
+      showRoomEditor(true);
       $('api-status').textContent='Save the key to list Nomis and persistent rooms.';
       return;
     }
@@ -137,7 +165,40 @@ async function loadApi() {
   } catch(error) { $('api-status').textContent=error.message; }
 }
 $('api-nomi').onchange=()=>{apiRoomOptions();void loadCheckpoint();};
-$('api-room').onchange=()=>void loadCheckpoint();
+$('api-room').onchange=()=>{showRoomEditor(true);void loadCheckpoint();};
+$('api-save-description').onclick=async()=>{
+  const room=selectedApiRoom();
+  if(!room||apiManagementPending||lastState?.running)return;
+  const note=$('api-room-description').value;
+  if(note.length>1000){$('api-status').textContent='Description is limited to 1,000 characters.';return;}
+  if(note===apiNoteBaseline){$('api-status').textContent='Description is already saved.';return;}
+  apiManagementPending=true;renderRoomManagementButtons();
+  try{
+    await request('api-update-room-note',{roomId:room.uuid,note,expectedNote:apiNoteBaseline});
+    await loadApi();
+    $('api-status').textContent='Updated the description for '+room.name+'. Backchanneling is unchanged.';
+  }catch(error){
+    $('api-status').textContent=error.message+' If the request timed out, refresh the room list to verify whether it was saved.';
+  }finally{apiManagementPending=false;renderRoomManagementButtons();}
+};
+$('api-delete-room').onclick=async()=>{
+  const room=selectedApiRoom();
+  if(!room||apiManagementPending||lastState?.running)return;
+  const answer=window.prompt('To permanently delete the Nomi API room, type its exact name:\\n'+room.name+'\\n\\nIts room history cannot be restored by the bridge.');
+  if(answer===null)return;
+  if(answer!==room.name){$('api-status').textContent='Room name did not match. Nothing was deleted.';return;}
+  if(!window.confirm('Permanently delete '+room.name+' ('+room.uuid+')? This is irreversible and does not delete the Nomi herself.'))return;
+  apiManagementPending=true;renderRoomManagementButtons();
+  try{
+    await request('api-delete-room',{roomId:room.uuid,nomiUuid:$('api-nomi').value,confirmName:answer});
+    apiCatalog.rooms=apiCatalog.rooms.filter(r=>r.uuid!==room.uuid);
+    apiRoomOptions();
+    await loadApi();
+    $('api-status').textContent='Deleted API room '+room.name+'. The Nomi herself remains.';
+  }catch(error){
+    $('api-status').textContent=error.message+' Deletion may be uncertain: refresh rooms before trying again.';
+  }finally{apiManagementPending=false;renderRoomManagementButtons();}
+};
 function renderRecoveryButtons(){
   const cp=recoveryCheckpoint;
   const unsettled=cp && !['completed','abandoned'].includes(cp.status);
@@ -214,12 +275,16 @@ $('create-api-room').onclick=async()=>{
   const nomi=apiCatalog?.nomis.find(n=>n.uuid===nomiUuid);
   if (!nomi) {$('api-status').textContent='Select a Nomi first.';return;}
   const name=$('api-room-name').value.trim() || 'WORLD::'+nomi.name;
+  const note=$('api-new-room-description').value;
+  if(note.length>1000){$('api-status').textContent='New room description is limited to 1,000 characters.';return;}
   $('create-api-room').disabled=true;
   try {
-    const created=await request('api-create-room',{nomiUuid,name});
+    const created=await request('api-create-room',{nomiUuid,name,note});
     await loadApi();
     apiRoomOptions(created.roomUuid);
+    await loadCheckpoint();
     $('api-room-name').value='';
+    $('api-new-room-description').value='';
     $('api-status').textContent='Created a persistent world room for '+nomi.name+'.';
   } catch(error) {$('api-status').textContent=error.message;}
   finally {$('create-api-room').disabled=!!lastState?.running;}

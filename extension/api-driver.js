@@ -62,6 +62,7 @@ class NomiApiDriver {
     const rooms=(Array.isArray(r.rooms)?r.rooms:[])
       .filter(x=>NomiApiRoom.safeNomiId(x.uuid))
       .map(x=>({uuid:x.uuid,name:String(x.name||x.uuid),
+        note:typeof x.note==='string'?x.note:'',backchannelingEnabled:x.backchannelingEnabled===true,
         nomiUuids:['nomiUuids','nomis'].flatMap(k=>
           Array.isArray(x[k])?x[k].map(v=>typeof v==='string'?v:v?.uuid).filter(Boolean):[])}));
     return {nomis,rooms};
@@ -75,15 +76,16 @@ class NomiApiDriver {
       await this.delay(1000);
     }
   }
-  async createRoom(nomiUuid,name) {
+  async createRoom(nomiUuid,name,note='Persistent world room for Chat Bridge API mode') {
     if(!NomiApiRoom.safeNomiId(nomiUuid))throw Error('Select a Nomi.');
     name=String(name||'').trim();
     if(!name||name.length>80)throw Error('Room name must have 1–80 characters.');
+    if(typeof note!=='string'||note.length>1000)throw Error('Room description must be at most 1,000 characters.');
     const catalog=await this.catalog();
     if(!catalog.nomis.some(n=>n.uuid===nomiUuid))throw Error('Selected Nomi not found.');
     // Room creation is non-idempotent: do NOT repeat an uncertain POST.
     const result=await this.request('/rooms','POST',{
-      name,note:'Persistent world room for Chat Bridge API mode',
+      name,note,
       backchannelingEnabled:true,nomiUuids:[nomiUuid]
     });
     const room=result.room||result;
@@ -91,6 +93,63 @@ class NomiApiDriver {
       throw Error('Room creation outcome uncertain: inspect rooms before creating another.');
     await this.waitForRoom(room.uuid);
     return {roomUuid:room.uuid};
+  }
+  ensureRoomManagementIdle() {
+    if(this.inFlight||this.recoveryScheduled||this.getBridge()?.running)
+      throw Error('Stop the bridge and any API recovery before managing rooms.');
+  }
+  async readRoom(roomId) {
+    if(!NomiApiRoom.safeNomiId(roomId))throw Error('Select a valid API room.');
+    const data=await this.request('/rooms/'+roomId);
+    const room=data.room||data;
+    if(room.uuid && room.uuid!==roomId)throw Error('Nomi API returned an unexpected room ID.');
+    return room;
+  }
+  async updateRoomNote(roomId,note,expectedNote) {
+    this.ensureRoomManagementIdle();
+    if(typeof note!=='string'||note.length>1000)
+      throw Error('Room description must be at most 1,000 characters.');
+    if(typeof expectedNote!=='string')
+      throw Error('Refresh room details before editing the description.');
+    const room=await this.readRoom(roomId);
+    if(typeof room.note!=='string')
+      throw Error('Room description could not be read. Refresh and retry.');
+    if(room.note!==expectedNote)
+      throw Error('The room description changed elsewhere. Refresh before overwriting it.');
+    if(room.note===note)return {updated:false,note};
+    // Note-only PUT: do not reset backchanneling, membership, or room name.
+    // An uncertain PUT must not be repeated automatically.
+    await this.request('/rooms/'+roomId,'PUT',{note});
+    const current=await this.readRoom(roomId);
+    if(current.note!==note)
+      throw Error('Nomi did not confirm the new room description. Refresh and inspect the room.');
+    return {updated:true,note:current.note};
+  }
+  async deleteRoom(roomId,nomiUuid,confirmName) {
+    this.ensureRoomManagementIdle();
+    if(!NomiApiRoom.safeNomiId(roomId)||!NomiApiRoom.safeNomiId(nomiUuid))
+      throw Error('Select a valid Nomi API room.');
+    const cp=await this.checkpoint.load(roomId);
+    if(cp&&!['completed','abandoned'].includes(cp.status))
+      throw Error('Room has an unfinished checkpoint ('+cp.status+'). Recover or abandon the checkpoint first.');
+    const catalog=await this.catalog();
+    const listed=catalog.rooms.find(x=>x.uuid===roomId);
+    if(!listed||listed.nomiUuids.length!==1||listed.nomiUuids[0]!==nomiUuid)
+      throw Error('The selected room does not belong exclusively to the selected Nomi. Refresh rooms.');
+    const room=await this.readRoom(roomId);
+    if(room.name!==listed.name||typeof confirmName!=='string'||confirmName!==room.name)
+      throw Error('Room deletion confirmation did not match its exact name.');
+    // DELETE is irreversible; no retry after an uncertain outcome.
+    await this.request('/rooms/'+roomId,'DELETE');
+    // Only erase the local checkpoint after the server acknowledged deletion.
+    await chrome.storage.local.remove(this.checkpoint.key(roomId));
+    const bridge=this.getBridge();
+    if(bridge.apiSession?.roomId===roomId){
+      bridge.apiSession=null;
+      if(!bridge.running)bridge.reset();
+      delete bridge.tabs[NomiApiRoom.apiRoomId(roomId)];
+    }
+    return {deleted:true,roomId,name:room.name};
   }
   snapshot(roomId,nomiName,old={},updates={}) {
     return {...old,site:'api-room',url:'api-room:'+roomId,
