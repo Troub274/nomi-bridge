@@ -25,13 +25,13 @@ class Bridge {
     this.events = this.events.slice(-100);
   }
   stop(reason = 'Stopped. Press Play to resume.') {this.running = false; this.log(reason);}
-  retryGPTTab(id,observedUrl){
+  retryGPTTab(id,observedUrl,originalUrl){
     id=String(id);
     const s=this.apiSession;
     if(!this.running||this.mode!=='api-room'||this.pair?.[0]!==id||
        this.source!==this.pair?.[1]||this.phase==='send'||
        !['ready','inflight','delivering','reply_saved'].includes(s?.pendingReply))return false;
-    const expectedUrl=this.tabRetry?.expectedUrl||this.tabs[id]?.url;
+    const expectedUrl=this.tabRetry?.expectedUrl||originalUrl||this.tabs[id]?.url;
     if(!expectedUrl||expectedUrl===observedUrl)return false;
     if(!this.tabRetry){
       this.tabRetry={id,expectedUrl,startedAt:this.clock(),attempts:0};
@@ -76,7 +76,7 @@ class Bridge {
     this.log('Reset. Next Play starts with the selected speaker’s latest reply.');
   }
   heartbeat(id, snapshot) {
-    const old = this.tabs[id];
+    let old = this.tabs[id];
     const changed = !old || old.replyKey !== snapshot.replyKey || old.reply !== snapshot.reply || old.busy !== snapshot.busy || old.complete !== snapshot.complete || old.roomKey !== snapshot.roomKey || old.autoChat !== snapshot.autoChat || old.userTurn !== snapshot.userTurn;
     this.tabs[id] = {...snapshot, id, seen: this.clock(), changed: changed ? this.clock() : old.changed};
     // Keep the original URL across a transient navigation. A snapshot from
@@ -85,13 +85,16 @@ class Bridge {
       if(snapshot.url===this.tabRetry.expectedUrl && snapshot.ready &&
          !snapshot.busy && !snapshot.draft){
         this.tabRetry=null;
+        // The temporary wrong URL must not be interpreted as a NEW
+        // navigation away from the just-restored original conversation.
+        old={...old,url:snapshot.url};
         this.log('Original ChatGPT conversation reconnected. Resuming the saved Nomi reply.');
       }else{
         this.tick();
         return {};
       }
     }else if(this.running && this.pair?.includes(id) && old &&
-          old.url!==snapshot.url && this.retryGPTTab(id,snapshot.url)){
+          old.url!==snapshot.url && this.retryGPTTab(id,snapshot.url,old.url)){
       this.tick();
       return {};
     }
