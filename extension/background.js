@@ -1,6 +1,7 @@
-importScripts('engine.js', 'group.js');
+importScripts('engine.js', 'group.js', 'api-room.js', 'api-driver.js');
 let bridge;
 let queue = Promise.resolve();
+const apiDriver = new NomiApiDriver(() => bridge, transaction);
 const chatPatterns = ['https://chatgpt.com/*','https://chat.openai.com/*','https://nomi.ai/*','https://*.nomi.ai/*'];
 let discovery;
 const probing = new Set();
@@ -12,8 +13,9 @@ async function bounded(operation) {
   finally {clearTimeout(timer);}
 }
 async function wakeSelected(data, ticket) {
-  const ids = data.tabs || [data.chatgpt,data.nomi];
-  if (!Array.isArray(ids) || ids.length !== 2 || ids.some(id=>!/^\d+$/.test(String(id))) || String(ids[0]) === String(ids[1])) throw Error('Select two different chat tabs.');
+  const apiMode = data.mode === 'api-room';
+  const ids = apiMode ? [data.tabs?.[0]] : data.tabs || [data.chatgpt,data.nomi];
+  if (!Array.isArray(ids) || ids.length !== (apiMode ? 1 : 2) || ids.some(id=>!/^\d+$/.test(String(id))) || (!apiMode && String(ids[0]) === String(ids[1]))) throw Error('Select the required chat tabs.');
   const check = () => {if (ticket !== startupGeneration) throw Error('Startup cancelled.');};
   await transaction(()=>{check();if(bridge.running)throw Error('Already running.');});
   const deadline = Date.now()+20000;
@@ -81,12 +83,20 @@ function discoverTabs() {
 function discoveredState() {
   const state = bridge.state();
   state.tabs = availableTabs.map(t => state.tabs.find(s => s.id === t.id && s.url === t.url) || t);
+  state.apiRoom = apiDriver.publicState();
   return state;
 }
 async function load() {
   if (!bridge) {
     const saved = await chrome.storage.session.get('bridge');
     bridge = new GroupBridge(undefined, saved.bridge || {});
+    const interrupted = bridge.mode === 'api-room' && (
+      bridge.apiSession?.pendingReply === 'inflight' ||
+      (bridge.phase === 'send' && bridge.command?.claimed && bridge.tabs[bridge.command.target]?.site === 'api-room'));
+    if (interrupted) {
+      bridge.phase = 'uncertain';
+      bridge.stop('An API room request was interrupted. Check the room and Reset; do not resend blindly.');
+    }
   }
   return bridge;
 }
@@ -94,11 +104,12 @@ function transaction(fn) {
   const operation = queue.then(async () => {
     await load();
     let result;
-    try {result = await fn();}
-    finally {await chrome.storage.session.set({bridge: bridge.serialize()});}
+    try {apiDriver.touch(); result = await fn();}
+    finally {apiDriver.touch(); await chrome.storage.session.set({bridge: bridge.serialize()});}
     return result;
   });
   queue = operation.catch(() => {});
+  void operation.then(() => queueMicrotask(() => void apiDriver.pump()), () => {});
   return operation;
 }
 async function verifySource(command) {
@@ -147,9 +158,29 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
     if (!sender.url?.startsWith(chrome.runtime.getURL(''))) throw Error('Unsupported sender');
     switch (message.path) {
       case '/api/state': return discoveredState();
-      case '/api/play': if(ticket !== startupGeneration)throw Error('Startup cancelled.'); bridge.start(data); return bridge.state();
+      case '/api/play':
+        if (ticket !== startupGeneration) throw Error('Startup cancelled.');
+        if (apiDriver.inFlight) throw Error('A Nomi API operation is still in progress.');
+        if (data.mode === 'api-room') await apiDriver.prepareStart(data);
+        bridge.start(data);
+        return bridge.state();
+      case '/api/nomi-key':
+        if (bridge.running || apiDriver.inFlight) throw Error('Stop the bridge first.');
+        return apiDriver.setKey(data.key);
+      case '/api/clear-nomi-key':
+        if (bridge.running || apiDriver.inFlight) throw Error('Stop the bridge first.');
+        return apiDriver.clearKey();
+      case '/api/api-config': return apiDriver.configured();
+      case '/api/api-catalog': return apiDriver.catalog();
+      case '/api/api-create-room':
+        if (bridge.running || apiDriver.inFlight) throw Error('Stop the bridge before creating an API room.');
+        return apiDriver.createRoom(data.nomiUuid,data.name);
       case '/api/stop': bridge.stop(); return bridge.state();
-      case '/api/reset': bridge.reset(); return bridge.state();
+      case '/api/reset':
+        if (apiDriver.inFlight) throw Error('Nomi API request is still in progress. Stop and inspect before resetting.');
+        bridge.reset();
+        bridge.apiSession = null;
+        return bridge.state();
       default: throw Error('Unsupported control request');
     }
   })).then(reply, error => reply({error: error.message}));
@@ -159,7 +190,10 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
 chrome.alarms.create('bridge-wake', {periodInMinutes: 0.5});
 chrome.alarms.onAlarm.addListener(async alarm => {
   if (alarm.name !== 'bridge-wake') return;
-  const ids = await transaction(() => {bridge.tick(); return bridge.running ? [...bridge.pair] : [];});
+  const ids = await transaction(() => {
+    apiDriver.touch(); bridge.tick();
+    return bridge.running ? bridge.pair.filter(id => /^\d+$/.test(String(id))) : [];
+  });
   await Promise.allSettled(ids.map(id => chrome.tabs.sendMessage(Number(id), {type: 'wake'})));
 });
 chrome.tabs.onRemoved.addListener(id => {
