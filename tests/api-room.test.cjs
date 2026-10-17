@@ -428,9 +428,11 @@ test('invalid [tail] or [history] command is consumed without any Nomi POST or c
     assert.equal(await h.cp.load(ROOM),null,'no checkpoint should be created');
     assert.equal(h.b.running,true,'invalid tag must not poison API checkpoint recovery');
     assert.equal(h.b.phase,'reply');
-    assert.equal(h.b.source,GPT_ID,'wait for a corrected GPT command');
+    assert.equal(h.b.source,virtual,'protocol feedback should give GPT a new reply turn');
     assert.equal(h.b.command,null);
-    assert.match(h.b.reason,/protocol error/i);
+    assert.match(h.b.tabs[virtual].reply,/WORLD ENGINE COMMAND REJECTED/);
+    assert.match(h.b.tabs[virtual].reply,/Nothing was sent to Nomi/);
+    assert.equal(h.b.apiSession.protocolFailures,1);
   }
 });
 
@@ -727,4 +729,63 @@ test('upgrading a stranded live_wait world POST ACKs GPT without resending Nomi 
   assert.equal(replies,0,'no room reply request in active private monitor');
   assert.match(h.b.tabs[virtual].reply,/DELIVERY CONFIRMED/);
   assert.equal((await h.cp.load(ROOM)).status,'reply_received');
+});
+
+test('single standalone [listening] after a prose mention of [tail] is recognized',()=>{
+  const gptReply="The restart check passed. [tail] returned events #160–169, confirming the retained transcript.\n"+
+    "I'm tracking the environment and will not interrupt Steve's conversation.\n"+
+    "[listening]";
+  const parsed=parseWorldCommand(gptReply);
+  assert.equal(parsed.kind,'listening');
+  assert.equal(parsed.ignoredPreamble,true);
+});
+test('single standalone [say room] survives other commands mentioned inside preamble sentences',()=>{
+  const gptReply="I reported it here instead of sending it to Test. Earlier [tail] returned events 160-169.\n"+
+    "I could also send [listening] later, but first I will correct the world state.\n"+
+    "[say room]\nWorld & Body Engine — Background State Update\nTest, your mild thirst persists.";
+  const parsed=parseWorldCommand(gptReply);
+  assert.equal(parsed.kind,'room');
+  assert.equal(parsed.text,"World & Body Engine — Background State Update\nTest, your mild thirst persists.");
+  assert.equal(parsed.ignoredPreamble,true);
+});
+test('mentioned tags without an isolated actual command cannot leak into Nomi world posts',()=>{
+  for(const prose of [
+    "I checked [tail], and I'm going to listen now.",
+    "Maybe [say room] would help, but first I need to think.",
+    "The [history] command worked, as expected."
+  ]) assert.equal(parseWorldCommand(prose).kind,'invalid',prose);
+  assert.equal(parseWorldCommand("A thought:\n[tail]\n[listening]").kind,'invalid');
+});
+test('malformed World Engine reply generates feedback to GPT but never sends Nomi any API request',async()=>{
+  const h=harness("I might invoke [tail] in prose, with no standalone command.");
+  let posts=0;
+  h.driver.request=async()=>{posts++;throw Error('Nomi API must not be called');};
+  await h.driver.pump();await h.settle();
+  assert.equal(posts,0);
+  assert.equal(h.b.source,virtual);
+  assert.match(h.b.tabs[virtual].reply,/WORLD ENGINE COMMAND REJECTED/);
+  assert.match(h.b.tabs[virtual].reply,/Use ONE command on its own line/);
+  assert.equal(h.b.running,true);
+  assert.equal(await h.cp.load(ROOM),null);
+});
+test('two more consecutive malformed commands stop feedback loop without posting to Nomi',async()=>{
+  const h=harness("I mention [tail] but won't send a command.");
+  let posts=0;
+  h.driver.request=async()=>{posts++;throw Error('Nomi API must not be called');};
+  await h.driver.pump();await h.settle();
+  assert.equal(h.b.apiSession.protocolFailures,1);
+  for(let n=2;n<=3;n++){
+    const reply={...h.source,reply:"My command [tail] is not isolated: "+n,replyKey:'gpt-'+n};
+    h.b.source=GPT_ID;h.b.phase='reply';h.b.baseline='previous';
+    h.b.heartbeat(GPT_ID,reply);
+    h.b.tabs[GPT_ID].changed=h.b.clock()-9;
+    h.b.tick();
+    assert.equal(h.b.command?.text,reply.reply);
+    globalThis.chrome.tabs.sendMessage=async()=>({snapshot:{...reply}});
+    await h.driver.pump();await h.settle();
+    assert.equal(h.b.apiSession.protocolFailures,n);
+  }
+  assert.equal(posts,0);
+  assert.equal(h.b.running,false);
+  assert.match(h.b.reason,/Three consecutive malformed/);
 });
