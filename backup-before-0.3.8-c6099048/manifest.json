@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "Chat Bridge",
+  "version": "0.3.7",
+  "description": "Connect chat tabs or let ChatGPT participate in a Nomi group room with tagged controls.",
+  "permissions": [
+    "storage",
+    "alarms",
+    "scripting"
+  ],
+  "host_permissions": ["https://chatgpt.com/*", "https://chat.openai.com/*", "https://nomi.ai/*", "https://*.nomi.ai/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*",
+        "https://nomi.ai/*",
+        "https://*.nomi.ai/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+const fs=require('node:fs');
+const p='browser_bridge/extension/engine.js';let s=fs.readFileSync(p,'utf8');
+s=s.replace('const NOMI_MESSAGE_LIMIT = 750;', `const NOMI_MESSAGE_LIMIT = 750;
+const LENGTH_REMINDER = '\\n\\n[Bridge reminder: Your previous reply exceeded 750 characters and was truncated before Nomi received it. Keep your entire next reply and subsequent replies within 750 characters, including spaces and punctuation.]';`);
+s=s.replace('baseline: null, turns: 0,','baseline: null, remindChatGPT: false, turns: 0,');
+s=s.replace('this.baseline = null; this.turns = 0;', 'this.baseline = null; this.remindChatGPT = false; this.turns = 0;');
+s=s.replace("this.phase = 'idle'; this.pair = null; this.command = null;", "this.phase = 'idle'; this.pair = null; this.command = null; this.remindChatGPT = false;");
+s=s.replace("    const text = dest.site === 'nomi' ? limitNomiMessage(source.reply) : source.reply;", "    const includesReminder = dest.site === 'chatgpt' && this.remindChatGPT;\n    const text = dest.site === 'nomi' ? limitNomiMessage(source.reply) : source.reply + (includesReminder ? LENGTH_REMINDER : '');\n    const truncated = dest.site === 'nomi' && text.length < source.reply.length;");
+s=s.replace('    if (text.length < source.reply.length)', '    if (truncated)');
+s=s.replace('target, text, url: dest.url','target, text, truncated, includesReminder, url: dest.url');
+s=s.replace("      this.source = cmd.target; this.baseline = cmd.baseline; this.phase = 'reply';", "      if (cmd.truncated) this.remindChatGPT = true;\n      if (cmd.includesReminder) this.remindChatGPT = false;\n      this.source = cmd.target; this.baseline = cmd.baseline; this.phase = 'reply';");
+fs.writeFileSync(p,s);
+const t='browser_bridge/tests/engine.test.cjs';s=fs.readFileSync(t,'utf8').replace("assert.equal(f.bridge.command.text,'Nomi answers');f.deliver();", "assert.ok(f.bridge.command.text.startsWith('Nomi answers\\n\\n[Bridge reminder:'));f.deliver();");fs.writeFileSync(t,s);
+const mp='browser_bridge/extension/manifest.json';const m=JSON.parse(fs.readFileSync(mp,'utf8').replace(/^\uFEFF/,''));m.version='0.1.6';fs.writeFileSync(mp,JSON.stringify(m,null,2)+'\n');

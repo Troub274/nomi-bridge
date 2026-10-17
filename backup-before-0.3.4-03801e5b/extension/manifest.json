@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "Chat Bridge",
+  "version": "0.2.0",
+  "description": "Relay replies between any two ChatGPT or Nomi chats, with Play and Stop.",
+  "permissions": [
+    "storage",
+    "alarms"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*",
+        "https://nomi.ai/*",
+        "https://*.nomi.ai/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}
+

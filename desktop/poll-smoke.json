@@ -1,0 +1,29 @@
+[
+  {
+    "smoke": "PASS",
+    "pair": [
+      "chatgpt",
+      "chatgpt"
+    ],
+    "turns": 2,
+    "profiles": 2
+  },
+  {
+    "smoke": "PASS",
+    "pair": [
+      "nomi",
+      "nomi"
+    ],
+    "turns": 2,
+    "profiles": 2
+  },
+  {
+    "smoke": "PASS",
+    "pair": [
+      "chatgpt",
+      "nomi"
+    ],
+    "turns": 2,
+    "profiles": 2
+  }
+]

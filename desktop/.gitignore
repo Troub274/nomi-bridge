@@ -1,0 +1,9 @@
+.deps/
+.venv/
+build/
+dist/
+dist-login-fix/
+dist-normal-edge/
+smoke-profiles*/
+__pycache__/
+*.spec
