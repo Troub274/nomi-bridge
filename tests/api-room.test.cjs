@@ -884,3 +884,63 @@ test('timed-out [listening] buffers incomplete user turn for later full catch-up
   assert.equal(s.monitorLastSeq||0,0);
   assert.equal(s.monitorPendingSeq,2);
 });
+
+test('API World Engine never auto-stops merely from 20 minutes of reply inactivity',async()=>{
+  const h=harness('[wait]'),s=h.b.apiSession;
+  s.monitorEnabled=true;s.monitorTabId='555';
+  h.driver.request=async()=>{throw Error('No Nomi API request');};
+  await h.driver.pump();await h.settle();
+  h.b.startedWait=h.b.clock()-1201;
+  h.b.tick();
+  assert.equal(h.b.running,true);
+  assert.equal(s.pendingReply,'live_wait');
+});
+
+test('API World Engine stays running through a sleeping ChatGPT tab while not sending',()=>{
+  const h=harness('[wait]');
+  h.b.tabs[GPT_ID].seen=h.b.clock()-125;
+  h.b.tick();
+  assert.equal(h.b.running,true);
+  assert.notEqual(h.b.phase,'uncertain');
+  assert.match(h.b.reason,/reconnect/i);
+  // Connection comes back and normal listening continues.
+  h.b.tabs[GPT_ID].seen=h.b.clock();
+  h.b.tick();
+  assert.equal(h.b.running,true);
+});
+
+test('API World Engine discards unclaimed stale commands on disconnect, never blindly sends later',()=>{
+  const h=harness('[say room]\nIt is raining.');
+  assert.equal(h.b.phase,'send');
+  assert.equal(h.b.command?.claimed,false);
+  h.b.tabs[GPT_ID].seen=h.b.clock()-125;
+  h.b.tick();
+  assert.equal(h.b.running,true);
+  assert.equal(h.b.command,null);
+  assert.equal(h.b.phase,'reply');
+  assert.equal(h.b.baseline,h.b.tabs[GPT_ID].replyKey);
+});
+
+test('disconnect while claimed API room send stays uncertain and stops for safety',()=>{
+  const h=harness('[say room]\nIt is raining.');
+  assert.equal(h.b.phase,'send');
+  h.b.command.claimed=true;
+  h.b.tabs[GPT_ID].seen=h.b.clock()-125;
+  h.b.tick();
+  assert.equal(h.b.running,false);
+  assert.equal(h.b.phase,'uncertain');
+  assert.match(h.b.reason,/disconnected during Send/);
+});
+
+test('legacy browser relay mode still stops on 15-minute timeout',()=>{
+  const b=new GroupBridge(()=>100);
+  b.heartbeat('10',{site:'chatgpt',reply:'Message',replyKey:'g1',url:'https://chatgpt.com/c/1',
+    document:'doc1',ready:true,complete:true,busy:false,draft:false,error:''});
+  b.heartbeat('20',{site:'nomi',reply:'Answer',replyKey:'n1',url:'https://nomi.ai/nomis/1',
+    document:'doc2',ready:true,complete:true,busy:false,draft:false,error:''});
+  b.start({mode:'direct',tabs:['10','20'],first:'first',settle:8});
+  b.startedWait=-1200;
+  b.tick();
+  assert.equal(b.running,false);
+  assert.match(b.reason,/15 minutes/);
+});
