@@ -39,4 +39,6 @@ function safeNomiError(status, payload) {
   // Deliberately do not interpolate raw error bodies: servers can echo credentials or requests.
   return 'Nomi API ' + type.slice(0,80) + ' (HTTP ' + (status || 'network error') + ')';
 }
-if (typeof module !== 'undefined') module.exports = {NOMI_API_BASE,NOMI_API_CHUNK_BYTES,apiRoomId,apiRoomUuid,safeNomiId,roomHasNomi,apiChunks,nomiReplyText,safeNomiError};
+const apiRoomHelpers = {NOMI_API_BASE,NOMI_API_CHUNK_BYTES,apiRoomId,apiRoomUuid,safeNomiId,roomHasNomi,apiChunks,nomiReplyText,safeNomiError};
+if (typeof module !== 'undefined') module.exports = apiRoomHelpers;
+else globalThis.NomiApiRoom = apiRoomHelpers;
