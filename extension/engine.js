@@ -113,6 +113,13 @@ class Bridge {
     if (!dest.ready) {this.reason = receiver + ' cannot receive yet: ' + (dest.diagnostic || 'check its editor and Send button'); return;}
     if (dest.busy) {this.reason = 'Waiting for ' + receiver + ' to finish generating before sending.'; return;}
     if (dest.draft) {this.stop('The destination has a draft. Clear it, then press Play.'); return;}
+    // Defense in depth: if the dashboard is accidentally in Direct mode,
+    // do not leak API World Engine control tags to the Nomi private chat.
+    if (dest.site === 'nomi' && this.mode !== 'group' &&
+        /\[(?:tail|history|wait|listening|say\s+room|say\s+chat)\b[^\]]*\]/i.test(source.reply)) {
+      this.stop('Bridge control tag blocked from Nomi private chat. Select API Room mode to use [tail], [history], [wait] or [say room].');
+      return;
+    }
     const includesReminder = dest.site === 'chatgpt' && this.remindChatGPT;
     const text = dest.site === 'nomi' ? limitNomiMessage(source.reply) : source.reply + (includesReminder ? LENGTH_REMINDER : '');
     const truncated = dest.site === 'nomi' && text.length < source.reply.length;
