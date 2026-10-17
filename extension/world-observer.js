@@ -118,7 +118,8 @@ function parseWorldCommand(text) {
   if (/\[(?:wait|listening|tail|history|say(?:\s+(?:room|chat))?|play|pause|invite|help)\b[^\]\r\n]{0,40}\]/i.test(input))
     return {kind:'invalid',reason:'Bridge tag is not a standalone command. No text was sent.'};
   if (/^```/.test(input))return {kind:'invalid',reason:'Remove Markdown fencing from the World Engine reply.'};
-  return {kind:'room',text:input,explicit:false};
+  // Preserve ALL original characters for untagged World Engine payloads.
+  return {kind:'room',text,explicit:false};
 }
 globalThis.WorldObserver=WorldObserver;
 globalThis.parseWorldCommand=parseWorldCommand;
