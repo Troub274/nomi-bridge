@@ -197,8 +197,12 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
         if (apiDriver.inFlight || apiDriver.recoveryScheduled) throw Error('Stop and let the active API operation finish before abandoning.');
         return apiDriver.abandon(data.roomId);
       case '/api/api-create-room':
-        if (bridge.running || apiDriver.inFlight) throw Error('Stop the bridge before creating an API room.');
-        return apiDriver.createRoom(data.nomiUuid,data.name);
+        if (bridge.running || apiDriver.inFlight || apiDriver.recoveryScheduled) throw Error('Stop the bridge before creating an API room.');
+        return apiDriver.createRoom(data.nomiUuid,data.name,data.note);
+      case '/api/api-update-room-note':
+        return apiDriver.updateRoomNote(data.roomId,data.note,data.expectedNote);
+      case '/api/api-delete-room':
+        return apiDriver.deleteRoom(data.roomId,data.nomiUuid,data.confirmName);
       case '/api/stop': bridge.stop(); return bridge.state();
       case '/api/reset':
         if (apiDriver.inFlight) throw Error('Nomi API request is still in progress. Stop and inspect before resetting.');
