@@ -361,8 +361,13 @@ class NomiApiDriver {
     const info=await chrome.tabs.sendMessage(Number(cmd.source),{type:'inspect'});
     if(!await this.transaction(()=>this.getBridge().validateSource(cmd.id,info?.snapshot)))return true;
     if(parsed.kind==='chat') {
-      // This mode is read-only with respect to the private chat by design.
-      throw Error('[say chat] is disabled: World Engine writes only to the API room.');
+      await this.transaction(()=>{
+        const bridge=this.getBridge();
+        if(!bridge.claim(id,cmd.id).allowed)throw Error('World command is no longer current.');
+        bridge.acknowledge(id,{id:cmd.id});
+      });
+      await this.publishObservation(s.roomId,'[say chat] is disabled. The World Engine writes to the API room only. Use [say room] to describe the world event.');
+      return true;
     }
     await this.transaction(()=>{
       const bridge=this.getBridge();
