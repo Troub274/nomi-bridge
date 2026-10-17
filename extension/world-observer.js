@@ -117,6 +117,23 @@ function parseWorldCommand(text) {
   let input=text.trim().replace(/^\uFEFF/,'');
   const outer=/^```(?:text|plaintext)?[ \t]*\r?\n([\s\S]*?)\r?\n```[ \t]*$/i.exec(input);
   if (outer) input=outer[1].trim();
+  // GPT may speak conversationally before issuing exactly one standalone
+  // bridge directive. Discard that preamble, never send it to Nomi. Reject
+  // multiple directives rather than inadvertently executing a batch.
+  const rawLines=input.split(/\r?\n/);
+  const directives=rawLines.map((line,index)=>
+    /^\s*\[(?:say\s+room|say\s+chat|wait|listening|tail|history(?:\s+\d{1,3})?|play|pause|invite|help|say)\]\s*$/i.test(line)
+      ?index:-1).filter(index=>index>=0);
+  if (directives.length>1)
+    return {kind:'invalid',reason:'Multiple bridge commands in one reply. Use one command per response.'};
+  if (directives.length===1&&directives[0]>0){
+    const pos=directives[0],preamble=rawLines.slice(0,pos).join('\n');
+    const suffix=rawLines.slice(pos).join('\n').trim();
+    if (/\[(?:say|wait|listening|tail|history|play|pause|invite|help)\b[^\]\r\n]{0,40}\]/i.test(preamble))
+      return {kind:'invalid',reason:'Bridge command appears in the preamble; remove extra commands.'};
+    const parsed=parseWorldCommand(suffix);
+    return parsed.kind==='invalid'?parsed:{...parsed,ignoredPreamble:true};
+  }
   const line=input.match(/^(\[[^\]\r\n]{1,50}\])([^\r\n]*)(?:\r?\n([\s\S]*))?$/);
   if (line) {
     const tag=line[1].slice(1,-1).trim().replace(/\s+/g,' ').toLowerCase();
