@@ -511,8 +511,15 @@ class NomiApiDriver {
       const exchange=s.monitorEnabled
         ? completedLiveExchange(await this.observer.history(s.roomId),s.monitorLastSeq||0)
         : {events:[],cursor:s.monitorLastSeq||0};
+      // Eligibility looks across the whole completed backlog, not just the
+      // first bounded delivery batch. Otherwise a busy chat can hold back
+      // a new reply past the first packet and mistakenly trigger fallback.
+      const allComplete=s.monitorEnabled
+        ? completedLiveExchange(await this.observer.history(s.roomId),
+            s.monitorLastSeq||0,Number.MAX_SAFE_INTEGER)
+        : {events:[]};
       const eligible=cp?.status==='awaiting_reply'
-        ? exchange.events.some(e=>e.speaker==='Nomi'&&e.seq>(s.monitorWorldStartSeq||0))
+        ? allComplete.events.some(e=>e.speaker==='Nomi'&&e.seq>(s.monitorWorldStartSeq||0))
         : !!exchange.events.length;
       if(eligible) {
         this.inFlight=true;
