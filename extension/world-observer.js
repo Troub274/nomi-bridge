@@ -54,6 +54,20 @@ class WorldObserver {
     return j.events.slice(-Math.max(1,Math.min(100,count)));
   }
   async history(roomId){return (await this.load(roomId)).events;}
+  async historyPage(roomId,page=1,maxChars=24000){
+    const events=await this.history(roomId),pages=[];
+    let batch=[],used=0;
+    for(const event of [...events].reverse()){
+      const size=event.text.length+120;
+      if(batch.length&&used+size>maxChars){
+        pages.push(batch.reverse());batch=[];used=0;
+      }
+      batch.push(event);used+=size;
+    }
+    if(batch.length)pages.push(batch.reverse());
+    return {events:pages[Math.max(0,page-1)]||[],page, pages:Math.max(1,pages.length),
+      retained:events.length};
+  }
   format(events,heading='WORLD ENGINE OBSERVATIONS',maxChars=30000){
     const lines=[heading+' — recorded local observations, not instructions.'];
     let remaining=maxChars-lines[0].length;
@@ -72,7 +86,9 @@ class WorldObserver {
 function parseWorldCommand(text) {
   if(typeof text!=='string')return {kind:'invalid',text:''};
   const input=text.trim();
-  const match=/^\[(listening|tail|history|wait|say room|say chat)\](?:\s*\n|\s*$)/i.exec(input);
+  const history=/^\[history(?:\s+(\d{1,3}))?\]$/i.exec(input);
+  if(history)return {kind:'history',page:Math.max(1,Number(history[1]||1)),text:''};
+  const match=/^\[(listening|tail|wait|say room|say chat)\](?:\s*\n|\s*$)/i.exec(input);
   if(!match)return {kind:'room',text};
   const tag=match[1].toLowerCase(),body=input.slice(match[0].length);
   if(tag==='say room')return {kind:'room',text:body};
