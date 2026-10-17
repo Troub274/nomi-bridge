@@ -19,6 +19,22 @@ With API Room mode selected and the world-engine bridge **stopped**, choose one 
 - **Delete room permanently:** press **Delete room permanently…**, type the room's exact name, and approve a separate final confirmation. A room with an unfinished send/reply checkpoint must be recovered or explicitly abandoned before deletion.
 - Deletion removes the **API room and its room history**, not the Nomi herself. A timeout during deletion has an uncertain outcome; **refresh the list** before trying again. No automatic retries of DELETE or PUT requests.
 
+## Optional World Engine live-chat monitoring (preview)
+
+Enable **Monitor Nomi live private chat** in API Room settings and optionally select the Nomi private-chat tab. If the tab is not open yet, the bridge will try to auto-bind it when the URL contains the selected Nomi UUID or matches a previously chosen conversation URL.
+
+- **World messages always go to the API room.** The bridge never writes them to the Nomi's private chat.
+- **When the private-chat tab is connected and exposes messages:** the bridge does **not** call `POST /rooms/{id}/chat/request` for the just-delivered world event. Instead it forwards recent live Nomi/user observations to ChatGPT so the World Engine can adjust its next turn.
+- **When there is no usable live conversation history** (tab closed, not yet connected, no recognized messages): the bridge uses normal API-room reply requests. If the tab closes mid-session, monitoring drops immediately and future world turns get API-room replies.
+- **`[say room]`** followed by text delivers that text to the API room with the existing 800-byte chunking and checkpoint rules. Untagged replies are also treated as world-room sends for backward compatibility.
+- **`[listening]`** waits for new private-chat messages; **`[wait]`** is equivalent. When live chat is unavailable, the bridge asks GPT to continue using the API room.
+- **`[tail]`** returns the last ten locally observed events, **`[history]`** returns the latest retained history page, and **`[history 2]`**, `[history 3]`, etc. retrieve progressively older pages.
+- **`[say chat]` is deliberately disabled** in this preview: private-chat access remains read-only.
+
+The extension keeps the latest **100** events in a separate persistent local journal per API room (source: live chat or room, speaker, observation timestamp and up to 6,000 text characters per event). Reopening Edge does not destroy this journal; ChatGPT can request `[tail]` or `[history]` after restarting. The **Clear local history** button erases the local journal while the bridge is stopped; deleting an API room also clears the journal. Neither action removes Nomi's underlying private chat. Local observation timestamps are when messages were seen by the bridge, not guaranteed original send times.
+
+**Browser-selector limitation:** live user/Nomi message reading depends on Nomi's current DOM. If the website changes its message CSS classes, the monitor may report zero observed messages and fall back to room replies. This requires a real Edge/Nomi smoke test before relying on unattended monitoring. While no new private-chat messages arrive, `[listening]` can remain idle; the World Engine does not automatically schedule new time-of-day events merely because monitoring is enabled.
+
 ## Every turn
 
 - Wait for a **complete ChatGPT answer**. A large World Engine action is allowed without a total message-length limit in the bridge.
