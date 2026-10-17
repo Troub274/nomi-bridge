@@ -1,4 +1,4 @@
-const WORLD_OBSERVER_BUILD = 'one-shot-listen-r7';
+const WORLD_OBSERVER_BUILD = 'one-shot-diagnostics-r8';
 const versionLabel = document.getElementById('build-version');
 if (versionLabel) versionLabel.textContent = 'v' + chrome.runtime.getManifest().version + ' · ' + WORLD_OBSERVER_BUILD;
 const $ = id => document.getElementById(id);
