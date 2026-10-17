@@ -40,6 +40,16 @@ function render(state) {
   $('group-help').hidden = !group;
   $('api-options').hidden = !api;
   $('nomi').closest('label').hidden = api;
+  if(api){
+    const monitor=$('api-monitor-tab'),old=monitor.value;
+    const tabs=(state.tabs||[]).filter(t=>t.site==='nomi'&&!t.room);
+    monitor.replaceChildren(new Option('Auto-detect selected Nomi when private chat opens',''),
+      ...tabs.map(t=>new Option((t.title||t.url||t.id)+' · window '+(t.window||'?'),t.id)));
+    if(tabs.some(t=>t.id===old))monitor.value=old;
+    $('api-monitor-status').textContent=state.apiRoom?.monitorEnabled?
+      state.apiRoom.monitorConnected?'Monitoring the Nomi private chat — API room reply requests suppressed.':
+      'Waiting for a usable private chat; API room replies are enabled.':'Live monitor disabled; receiving Nomi room replies.';
+  }
   if (api && !apiStartup) { apiStartup = true; void loadApi(); }
   $('room-state').textContent = state.room ? `Auto Chat: ${state.room.autoChat} · ${state.room.userTurn ? 'Waiting for user turn' : 'No user-turn notice'} · Members: ${state.room.members.join(', ')}` : '';
   for (const site of ['chatgpt', 'nomi']) {
@@ -66,6 +76,8 @@ function render(state) {
   for (const id of ['api-nomi','api-room','api-key','save-api-key','clear-api-key','refresh-api','api-room-name','api-new-room-description','create-api-room']) $(id).disabled = state.running;
   renderRecoveryButtons();
   renderRoomManagementButtons();
+  $('api-monitor-live').disabled=state.running;
+  $('api-monitor-tab').disabled=state.running || !$('api-monitor-live').checked;
   $('count').textContent = `${state.turns} messages forwarded`;
   $('status').textContent = state.reason;
   $('status').className = state.running ? 'running' : '';
@@ -97,7 +109,8 @@ $('play').onclick = () => {
   const data = {mode: $('mode').value,
     tabs: [$('chatgpt').value, api ? 'api:room:' + roomId : $('nomi').value],
     first: api ? 'first' : $('first').value, settle: $('settle').value,
-    ...(api ? {nomiUuid:$('api-nomi').value} : {})};
+    ...(api ? {nomiUuid:$('api-nomi').value,
+      monitorLive:$('api-monitor-live').checked,monitorTab:$('api-monitor-tab').value} : {})};
   if (api && (!apiKeyConfigured || !data.nomiUuid || !roomId)) {
     showError(Error('Save the Nomi API key, select one Nomi, and choose or create an API room.'));return;
   }
@@ -111,6 +124,9 @@ $('play').onclick = () => {
 };
 $('stop').onclick = () => action('stop');
 $('mode').onchange = () => {if (lastState) render(lastState);};
+$('api-monitor-live').onchange=()=>{
+  $('api-monitor-tab').disabled=!$('api-monitor-live').checked||!!lastState?.running;
+};
 function apiRoomOptions(desiredRoom = '') {
   const id = $('api-nomi').value;
   const old = desiredRoom || $('api-room').value;
