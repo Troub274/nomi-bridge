@@ -85,16 +85,35 @@ class WorldObserver {
   }
 }
 function parseWorldCommand(text) {
-  if(typeof text!=='string')return {kind:'invalid',text:''};
-  const input=text.trim();
-  const history=/^\[history(?:\s+(\d{1,3}))?\]$/i.exec(input);
-  if(history)return {kind:'history',page:Math.max(1,Number(history[1]||1)),text:''};
-  const match=/^\[(listening|tail|wait|say room|say chat)\](?:\s*\n|\s*$)/i.exec(input);
-  if(!match)return {kind:'room',text};
-  const tag=match[1].toLowerCase(),body=input.slice(match[0].length);
-  if(tag==='say room')return {kind:'room',text:body};
-  if(tag==='say chat')return {kind:'chat',text:body};
-  return {kind:tag,text:body};
+  if (typeof text !== 'string' || !text.trim()) return {kind:'invalid',reason:'Empty World Engine command.'};
+  // Remove a single complete Markdown fence if GPT supplied one.
+  let input=text.trim().replace(/^\uFEFF/,'');
+  const outer=/^```(?:text|plaintext)?[ \t]*\r?\n([\s\S]*?)\r?\n```[ \t]*$/i.exec(input);
+  if (outer) input=outer[1].trim();
+  const line=input.match(/^(\[[^\]\r\n]{1,50}\])([^\r\n]*)(?:\r?\n([\s\S]*))?$/);
+  if (line) {
+    const tag=line[1].slice(1,-1).trim().replace(/\s+/g,' ').toLowerCase();
+    const inline=line[2].trim(),rest=(line[3]||'').trim();
+    if (['wait','listening','tail'].includes(tag))
+      return inline||rest?{kind:'invalid',reason:'['+tag+'] takes no additional text.'}:{kind:tag,text:''};
+    const history=tag.match(/^history(?: ([1-9]\d{0,2}))?$/);
+    if (history)
+      return inline||rest?{kind:'invalid',reason:'[history] takes only an optional page number.'}:
+        {kind:'history',page:Number(history[1]||1),text:''};
+    if (tag==='say room'||tag==='say chat') {
+      const body=[inline,rest].filter(Boolean).join('\n');
+      if (!body) return {kind:'invalid',reason:'['+tag+'] needs message text.'};
+      return {kind:tag==='say room'?'room':'chat',text:body,explicit:true};
+    }
+    if (/^(say|wait|listening|tail|history|play|pause|invite|help)\b/.test(tag))
+      return {kind:'invalid',reason:'Unsupported or malformed bridge command: '+line[1]};
+  }
+  // Fail closed if a known bridge tag occurs elsewhere, including prose,
+  // quoted examples, Markdown wrappers and mixed command batches.
+  if (/\[(?:wait|listening|tail|history|say(?:\s+(?:room|chat))?|play|pause|invite|help)\b[^\]\r\n]{0,40}\]/i.test(input))
+    return {kind:'invalid',reason:'Bridge tag is not a standalone command. No text was sent.'};
+  if (/^```/.test(input))return {kind:'invalid',reason:'Remove Markdown fencing from the World Engine reply.'};
+  return {kind:'room',text:input,explicit:false};
 }
 globalThis.WorldObserver=WorldObserver;
 globalThis.parseWorldCommand=parseWorldCommand;
