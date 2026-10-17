@@ -1036,3 +1036,14 @@ test('[wait] remains silent while room-only fallback is active',async()=>{
   assert.equal(requests,0);
   assert.equal(h.driver.publicState().effectiveMode,'room-only');
 });
+
+test('30-second background wake delay does not falsely drop a recent live monitor into room-only',async()=>{
+  const h=harness('[wait]'),s=h.b.apiSession;
+  s.monitorEnabled=true;s.monitorTabId='555';
+  await h.driver.observeLive('555',{site:'nomi',url:'https://nomi.ai/nomis/'+NOMI,
+    liveMessages:[{speaker:'User',text:'Hello',key:'u1'}]});
+  s.monitorSeen=Date.now()-45000;
+  assert.equal(h.driver.isLiveAvailable(s),true,'45s heartbeat gap can happen between throttled wakes');
+  s.monitorSeen=Date.now()-80000;
+  assert.equal(h.driver.isLiveAvailable(s),false,'monitor outage eventually falls back');
+});
