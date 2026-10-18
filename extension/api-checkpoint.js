@@ -24,6 +24,7 @@ class ApiRoomCheckpoint {
       version:1,turnId:command.id,roomId,nomiUuid,
       sourceTab:command.source,sourceUrl:command.sourceUrl,
       sourceDocument:command.sourceDocument,sourceReplyKey:command.sourceKey,
+      sourceFullReply:command.sourceReply||command.text,
       text:command.text,
       total:chunks.length,confirmed:0,attemptedIndex:null,
       status:'planned', events:[],startedAt:new Date().toISOString()
@@ -66,7 +67,7 @@ class ApiRoomCheckpoint {
   }
   async delivered(cp) {
     if(cp.status!=='reply_received') throw Error('No committed reply is awaiting delivery.');
-    cp.text=null;cp.reply=null;
+    cp.text=null;cp.reply=null;cp.sourceFullReply=null;
     return this.mark(cp,'completed','reply_forwarded');
   }
   async recoverSend(cp,index) {
@@ -90,7 +91,7 @@ class ApiRoomCheckpoint {
   }
   async abandon(cp) {
     if (cp.status==='completed') throw Error('Completed checkpoint cannot be abandoned.');
-    cp.text=null;
+    cp.text=null;cp.sourceFullReply=null;cp.reply=null;
     return this.mark(cp,'abandoned','operator_abandoned');
   }
   brief(cp) {

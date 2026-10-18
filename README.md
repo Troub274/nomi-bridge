@@ -1,67 +1,57 @@
-# Chat Bridge — Edge extension and Windows desktop app
+# Chat Bridge
 
-## Current Edge extension: 0.4.0
+An unpacked Microsoft Edge extension for ChatGPT and Nomi. **Current release: 0.4.3.**
 
-**Three modes:** Direct Chat (two chat tabs), Group Chat (ChatGPT and a Nomi group room in Edge), and **API Room** (one ChatGPT tab + a separate persistent Nomi API room).
+Choose a mode, select the required tabs, and press Play. Stop prevents further sends; a message already submitted can still receive a reply.
 
-API Room uses the locally saved Nomi API key. Choose one Nomi, then select or create one room. Each complete ChatGPT turn—including arbitrarily long World Engine output—is sent in lossless, ordered submissions of up to **800 UTF-8 bytes**. After **all** chunks are confirmed, the bridge requests **one Nomi reply** and forwards it to ChatGPT. The Nomi's private chat is untouched. See [API-ROOM-MODE.md](API-ROOM-MODE.md) for setup, limits, and safety precautions.
+| Mode | Connects | Behavior |
+| --- | --- | --- |
+| Direct Chat | Two ChatGPT or Nomi chat tabs | Alternates completed replies. Messages sent to Nomi are limited to 750 characters. |
+| [Group room](GROUP-MODE.md) | ChatGPT and a Nomi browser group room | GPT can speak, listen, choose a Nomi, or control Auto Chat. Long messages are split without truncation. |
+| [Nomi API room](API-ROOM-MODE.md) | ChatGPT and a persistent API room with one Nomi | Sends room messages through the API; optionally observes the Nomi's private chat without writing to it. |
+| [Heartbeat](HEARTBEAT.md) | One ChatGPT tab | Repeats your phrase after completed responses, with a configurable 10-second default delay and GPT sleep commands. |
 
-The older setup/version notes follow below.
+**One session runs at a time per browser profile.** Multiple dashboard windows control the same session. Heartbeat cannot run alongside another bridge mode. No separate server, Python installation, or WSL is needed to run the extension. Only API Room mode requires a Nomi API key.
 
----
+## Install or update
 
-# Chat Bridge — Edge extension and Windows desktop app
+1. Download **ChatBridge-Edge-0.4.3.zip** from the [GitHub release](https://github.com/Troub274/nomi-bridge/releases/tag/v0.4.3), or use this repository's `extension/` folder.
+2. Extract the download to a permanent folder. In Edge, open `edge://extensions` and enable **Developer mode**.
+3. Choose **Load unpacked**, then select the **extension** folder containing `manifest.json`. Keep that folder in place.
+4. Open the chats you want to use and sign in normally. Open Chat Bridge from Edge's Extensions menu, then **Open Play / Stop controls**.
+5. Select the mode and tabs. Tabs in the same Edge profile appear automatically; Play activates the selected tabs and tries to connect them.
 
-Version 0.2.0 supports ChatGPT ↔ Nomi, ChatGPT ↔ ChatGPT, and Nomi ↔ Nomi. Select **First chat** and **Second chat**, then choose which starts. Both must be different tabs with an existing reply in the starting chat. Nomi destinations retain the 750-character limit; ChatGPT-to-ChatGPT forwards the full reply.
+To update, stop the bridge, replace the files in the folder shown under the extension's **Loaded from** location, click **Reload** at `edge://extensions`, and reopen the controls. Confirm **v0.4.3** appears. If you use a Git checkout, pull updates into that checkout first. Reloading does not download new code. The old ZIPs and backup directories in this repository are historical; use the versioned release asset above.
 
-The extension connects tabs in one browser profile. Tabs in that profile share website logins; separate tabs do not provide separate accounts. For different accounts, use the standalone Windows app, which opens two independent Edge profiles. See [desktop instructions](desktop/README.md). The portable app package is `desktop/dist/ChatBridge-Windows.zip`; the updated extension package is `ChatBridge-Edge.zip`.
+## Run and stop
 
-The notes below document the extension's setup and version history.
+- Direct Chat needs an existing reply from the selected first speaker. API Room starts with an existing GPT reply. Group mode supplies startup instructions automatically. Heartbeat sends your phrase when GPT is ready, with controls explained in its first prompt.
+- Keep Edge running and the computer awake. Timers may run late in background tabs or after computer sleep; the extension cannot send while the computer is asleep.
+- Leave the selected editors empty. A draft blocks automated delivery. Avoid navigating or manually editing the selected conversation while a send is in progress.
+- **Play** resumes the pending position. **Stop** prevents new sends. **Reset** discards the bridge position and can repeat previously seen content. For an unresolved API checkpoint, use the recovery controls described in the [API guide](API-ROOM-MODE.md) before resetting.
+- Completion detection requires the site's generation/completion indicators and a quiet-time check. The quiet-time setting also applies before Heartbeat's repeat delay.
 
-## Install once
+Direct mode supports ChatGPT ↔ Nomi, ChatGPT ↔ ChatGPT, and Nomi ↔ Nomi. Messages to Nomi are shortened to 750 characters; after confirmed truncation, a later Nomi-to-GPT delivery includes a length reminder. Group mode uses chunks of up to 800 UTF-16 units; API mode uses chunks of up to 800 UTF-8 bytes. These are distinct limits. Text is supported; audio, images, and attachments are not relayed.
 
-1. In Edge, open edge://extensions.
-2. Turn on Developer mode.
-3. Click Load unpacked and select:
-   C:\home\stecla\coding\nomi\browser_bridge\extension
-4. Open your ChatGPT and Nomi conversations in two Edge tabs. Refresh both once.
-5. Open the ChatGPT ↔ Nomi Bridge extension from Edge's Extensions menu.
-6. Click Open Play / Stop controls.
+## Troubleshooting
 
-## Start chatting
+| Symptom | What to check |
+| --- | --- |
+| Old version after Reload | Verify the **Loaded from** folder. Reload only reads files in that folder; it does not fetch GitHub changes. Reopen the dashboard. |
+| Missing tab | Confirm it belongs to this Edge profile, open it, finish sign-in/loading, and try Play again. |
+| Extension not answering | Reload it at `edge://extensions`, reopen controls, and inspect its service-worker errors if the problem persists. |
+| Waiting for a reply | Check the selected tab, completion controls, generation status, and editor drafts. Website layout changes may require selector updates in the extension's setup preview. |
+| Uncertain delivery | Inspect the destination before retrying. Use API checkpoint recovery for API mode; do not blindly Reset and replay. |
+| Need a diagnostic report | Use **Activity → Copy troubleshooting status**. It omits message bodies and the API key, but can include conversation URLs and identifiers. |
 
-Select the ChatGPT tab and the Nomi tab, choose whose latest reply starts the conversation, and press Play. The first speaker must already have a reply in its chat. If necessary, send it an opening message yourself first.
+## Data and persistence
 
-The bridge alternates text replies indefinitely while Edge is open and the computer is awake. Stop prevents further sends; something already submitted can still receive a reply. Play resumes the pending turn. Reset discards the pending position and starts again from the selected speaker's latest reply, which may repeat that reply.
+The extension has no relay server. Browser chat modes operate signed-in pages; API mode calls Nomi directly. Tabs in one profile share website logins.
 
-If a send is uncertain or a selected chat is reloaded, navigated, or closed, check both chats before using Reset. Do not type in the selected chats while the bridge runs. If a website rejects a long reply, the bridge stops rather than silently truncating it.
+Running sessions and recent snapshots use Edge session storage: service-worker suspension retains them; browser shutdown, extension reload, or disabling the extension clears them. Heartbeat's phrase and delay are remembered separately by the dashboard. Selectors, the API key, room checkpoints, and optional observation journals use persistent local storage. The journal retains the latest 500 events per room, up to 6,000 characters per event. See the [API guide](API-ROOM-MODE.md) for clearing history and recovering interrupted requests.
 
-## Check the live chat controls
+## Development and release notes
 
-Open the extension on either chat tab and expand Set up this chat's page controls. Preview shows the latest AI reply and whether generation is detected. Verify it shows the complete newest AI reply, without your own text or sidebar content. If a site changes its controls, adjust them there.
+See [DEVELOPMENT.md](DEVELOPMENT.md) for architecture and checks, and [CHANGELOG.md](CHANGELOG.md) for this release. The automated suite has **151 passing tests** at 0.4.3. Tests use mocks and fixtures, not live account messages; website/API changes still require live verification.
 
-Reply completion uses the website's visible generation indicator plus a quiet-time delay (8 seconds by default). A quiet period alone is not a guarantee that a reply is finished. The supplied Nomi controls were derived from its public site code, not a verified logged-in session.
-
-This version connects tabs in the same Edge profile. It does not connect separate browsers or profiles. It forwards text only. It needs no Python, WSL, API key, or local server.
-
-## Validation
-
-Nine automated checks pass: continuous alternation, streaming waits, Stop/Resume, uncertain sends, navigation during a send, drafts, session restoration, wrong-tab delivery, and storage-update feedback prevention. All JavaScript files pass syntax checks. Installation and real ChatGPT/Nomi sending in your logged-in Edge tabs still need live testing.
-
-## Files and data
-
-Load the extension folder, not this parent folder or the zip file. Keep that folder in place after installation. The extension holds recent chat snapshots and relay state in Edge session storage and saves custom control selectors in local extension storage. It has no remote relay server.
-
-Version 0.1.4 sends one message per turn. ChatGPT replies longer than 750 characters are cut to 750 for Nomi, with no extra parts sent. Each Nomi reply goes back to ChatGPT next. The receiving tab is selected automatically before Send to avoid inactive-tab delays. Use Activity → Copy troubleshooting status to report a stall; it excludes message text.
-
-ChatGPT replies now require completion controls on the current response and no streaming marker. Multiple assistant text blocks in that response are read together. If completion cannot be detected, the bridge waits rather than forwarding a partial reply. Twenty-one automated checks pass; the actual page still needs live verification.
-
-
-Version 0.1.6: after a shortened message is confirmed sent to Nomi, the next Nomi reply forwarded to ChatGPT includes a clearly labeled bridge reminder to keep entire replies within 750 characters. The reminder is added once per truncation and is not added to Nomi's chat itself.
-
-
-Version 0.1.7 checks streaming markers on the response container itself. Activity records source and outgoing character counts; Copy troubleshooting status includes the last delivery's counts. Live short-fragment diagnosis remains open.
-
-
-Version 0.1.8 makes Play show immediate progress and errors beside the button, handles unavailable selection storage, and times out unresponsive extension requests. Nomi's input/send/reply selectors were checked against the live logged-in page on October 9. The cause of the user's inert Play button has not yet been confirmed.
-
+The separate [Windows desktop wrapper](desktop/README.md) is a legacy two-chat tool. This release updates the Edge extension; it does not add API Room, Group, or Heartbeat support to that wrapper.

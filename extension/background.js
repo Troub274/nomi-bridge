@@ -1,4 +1,4 @@
-importScripts('engine.js', 'group.js', 'api-room.js', 'api-checkpoint.js', 'api-driver.js');
+importScripts('engine.js', 'group.js', 'heartbeat.js', 'api-room.js', 'api-checkpoint.js', 'world-observer.js', 'api-driver.js');
 let bridge;
 let queue = Promise.resolve();
 const apiDriver = new NomiApiDriver(() => bridge, transaction);
@@ -13,7 +13,7 @@ async function bounded(operation) {
   finally {clearTimeout(timer);}
 }
 async function wakeSelected(data, ticket) {
-  const apiMode = data.mode === 'api-room';
+  const apiMode = data.mode === 'api-room' || data.mode === 'heartbeat';
   const ids = apiMode ? [data.tabs?.[0]] : data.tabs || [data.chatgpt,data.nomi];
   if (!Array.isArray(ids) || ids.length !== (apiMode ? 1 : 2) || ids.some(id=>!/^\d+$/.test(String(id))) || (!apiMode && String(ids[0]) === String(ids[1]))) throw Error('Select the required chat tabs.');
   const check = () => {if (ticket !== startupGeneration) throw Error('Startup cancelled.');};
@@ -71,7 +71,11 @@ function discoverTabs() {
         await bounded(chrome.scripting.executeScript({target:{tabId:t.id},files:['content.js']}));
         info = await bounded(chrome.tabs.sendMessage(t.id,{type:'inspect'}));
       }
-      if (info?.snapshot) await transaction(() => bridge.heartbeat(String(t.id),{...info.snapshot,browser:'Edge',window:t.windowId}));
+      if (info?.snapshot) await transaction(async () => {
+        await apiDriver.observeLive(String(t.id),info.snapshot);
+        const {liveMessages,...rest}=info.snapshot;
+        bridge.heartbeat(String(t.id),{...rest,browser:'Edge',window:t.windowId});
+      });
       } catch (error) {
         const entry = availableTabs.find(x=>x.id===String(t.id));
         if(entry) entry.diagnostic = 'Not connected: '+error.message;
@@ -89,7 +93,7 @@ function discoveredState() {
 async function load() {
   if (!bridge) {
     const saved = await chrome.storage.session.get('bridge');
-    bridge = new GroupBridge(undefined, saved.bridge || {});
+    bridge = new (globalThis.HeartbeatBridge || GroupBridge)(undefined, saved.bridge || {});
     const interrupted = bridge.mode === 'api-room' && (
       bridge.apiSession?.pendingReply === 'inflight' ||
       (bridge.phase === 'send' && bridge.command?.claimed && bridge.tabs[bridge.command.target]?.site === 'api-room'));
@@ -151,7 +155,9 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
     if (sender.tab && /^https:\/\/(chatgpt\.com|chat\.openai\.com|(?:[a-z0-9-]+\.)?nomi\.ai)\//.test(sender.url || '')) {
       const tab = String(sender.tab.id);
       if (message.path === '/api/heartbeat') {
-        const result = bridge.heartbeat(tab, {...data.snapshot, browser: 'Edge', window: sender.tab.windowId});
+        await apiDriver.observeLive(tab,data.snapshot);
+        const {liveMessages,...snapshot}=data.snapshot||{};
+        const result = bridge.heartbeat(tab, {...snapshot, browser: 'Edge', window: sender.tab.windowId});
         if (result.command) {
           if (!await verifySource(result.command)) return {};
           // Keep the receiving editor out of inactive-tab timer throttling during Send.
@@ -183,6 +189,12 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
         if (apiDriver.inFlight) throw Error('A Nomi API operation is still in progress.');
         if (data.mode === 'api-room') await apiDriver.prepareStart(data);
         bridge.start(data);
+        if(data.mode==='api-room' && data.monitorLive && data.monitorTab){
+          try {
+            const info=await chrome.tabs.sendMessage(Number(data.monitorTab),{type:'inspect'});
+            await apiDriver.observeLive(String(data.monitorTab),info?.snapshot);
+          }catch(error){bridge.log('Private-chat monitor is waiting for the selected tab to reconnect.');}
+        }
         return bridge.state();
       case '/api/nomi-key':
         if (bridge.running || apiDriver.inFlight) throw Error('Stop the bridge first.');
@@ -193,6 +205,8 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
       case '/api/api-config': return apiDriver.configured();
       case '/api/api-catalog': return apiDriver.catalog();
       case '/api/api-checkpoint': return apiDriver.checkpointState(data.roomId);
+      case '/api/api-journal': return apiDriver.journalState(data.roomId);
+      case '/api/api-clear-journal': return apiDriver.clearJournal(data.roomId);
       case '/api/api-abandon':
         if (apiDriver.inFlight || apiDriver.recoveryScheduled) throw Error('Stop and let the active API operation finish before abandoning.');
         return apiDriver.abandon(data.roomId);
@@ -215,20 +229,82 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
   }).then(reply, error => reply({error: error.message}));
   return true;
 });
+// Retry the selected GPT TAB, not the Nomi room POST. On Edge reload the
+// content script may not yet be installed, so inspect/reinject as needed.
+// Never inject or send to a different ChatGPT conversation URL.
+async function retrySelectedGPTTab(){
+  const state=await transaction(()=>{
+    if(!bridge.running||bridge.mode!=='api-room')return null;
+    const selected=String(bridge.pair?.[0]||'');
+    const trusted=bridge.tabRetry?.expectedUrl||bridge.tabs[selected]?.url;
+    return /^\d+$/.test(selected)&&/^https:\/\/(chatgpt\.com|chat\.openai\.com)\//.test(trusted||'')
+      ?{selected,expectedUrl:trusted}:null;
+  });
+  if(!state)return;
+  let tab;
+  try{tab=await bounded(chrome.tabs.get(Number(state.selected)));}
+  catch{return;}
+  if(tab?.url!==state.expectedUrl){
+    await transaction(()=>{
+      if(bridge.running&&bridge.pair?.[0]===state.selected)
+        bridge.retryGPTTab(state.selected,tab?.url||'',state.expectedUrl);
+    });
+    return;
+  }
+  if(tab.discarded||tab.status==='loading')return;
+  try{
+    let info;
+    try{info=await bounded(chrome.tabs.sendMessage(tab.id,{type:'inspect'}));}catch{}
+    if(!info?.snapshot){
+      await bounded(chrome.scripting.executeScript({target:{tabId:tab.id},files:['content.js']}));
+      info=await bounded(chrome.tabs.sendMessage(tab.id,{type:'inspect'}));
+    }
+    if(info?.snapshot?.url!==state.expectedUrl||info.snapshot.site!=='chatgpt')return;
+    await transaction(()=>{
+      if(bridge.running&&bridge.pair?.[0]===state.selected)
+        bridge.heartbeat(state.selected,{...info.snapshot,window:tab.windowId,browser:'Edge'});
+    });
+  }catch{
+    // A transient sleeping/loading page will be checked on the next alarm.
+  }
+}
 // Wake selected content scripts even when inactive-tab timers are throttled.
 chrome.alarms.create('bridge-wake', {periodInMinutes: 0.5});
 chrome.alarms.onAlarm.addListener(async alarm => {
   if (alarm.name !== 'bridge-wake') return;
   const ids = await transaction(() => {
     apiDriver.touch(); bridge.tick();
-    return bridge.running ? bridge.pair.filter(id => /^\d+$/.test(String(id))) : [];
+    if(!bridge.running)return [];
+    const ids=bridge.pair.filter(id => /^\d+$/.test(String(id)));
+    const monitor=bridge.apiSession?.monitorEnabled && bridge.apiSession.monitorTabId;
+    if(bridge.mode==='api-room' && monitor && !ids.includes(monitor))ids.push(monitor);
+    return ids;
   });
-  await Promise.allSettled(ids.map(id => chrome.tabs.sendMessage(Number(id), {type: 'wake'})));
+  await Promise.allSettled([
+    ...ids.map(id => chrome.tabs.sendMessage(Number(id), {type: 'wake'})),
+    retrySelectedGPTTab()
+  ]);
+});
+// Observe tab navigation immediately instead of waiting for a potentially
+// missing heartbeat from the old conversation's content script.
+chrome.tabs.onUpdated?.addListener?.((id,changeInfo) => {
+  if(!changeInfo.url)return;
+  transaction(()=>{
+    const selected=String(id);
+    if(bridge.running&&bridge.mode==='api-room'&&bridge.pair?.[0]===selected)
+      bridge.retryGPTTab(selected,changeInfo.url,bridge.tabs[selected]?.url);
+  }).catch(()=>{});
 });
 chrome.tabs.onRemoved.addListener(id => {
   transaction(() => {
     const key = String(id);
     if (bridge.pair?.includes(key)) {bridge.phase = 'uncertain'; bridge.stop('A selected chat tab closed. Choose chats and Reset before continuing.');}
+    if (bridge.mode==='api-room' && bridge.apiSession?.monitorTabId===key){
+      bridge.apiSession.monitorTabId='';
+      bridge.apiSession.monitorSeen=0;
+      bridge.apiSession.monitorCount=0;
+      bridge.log('Live Nomi chat closed. Falling back to API room responses until it reconnects.');
+    }
     delete bridge.tabs[key];
   }).catch(() => {});
 });

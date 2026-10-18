@@ -1,6 +1,12 @@
 const {test}=require('node:test');const assert=require('node:assert/strict');const vm=require('node:vm');const fs=require('node:fs');
+test('Heartbeat interface sends one GPT tab, phrase and default delay',async()=>{
+ const {elements,payloads}=await setup();elements.mode.value='heartbeat';elements.mode.onchange();elements.nomi.value='';
+ assert.equal(elements['heartbeat-options'].hidden,false);assert.equal(elements.nomi.hidden,true);
+ elements['heartbeat-text'].value='Keep going';elements.play.onclick();await new Promise(r=>setImmediate(r));
+ const play=payloads.find(m=>m.path==='/api/play');assert.deepEqual(Array.from(play.data.tabs),['1']);assert.equal(play.data.heartbeatText,'Keep going');assert.equal(play.data.heartbeatDelay,10);
+});
 async function setup({blockedStorage=false,rejectPlay=false, sites=['chatgpt','nomi'],room=false}={}) {
- const ids=['mode','group-help','room-state','build-version','chatgpt','nomi','first','settle','play','stop','reset','status','error','count','tabs','events','copy-status','api-options','api-nomi','api-room','api-key','save-api-key','clear-api-key','refresh-api','api-room-name','create-api-room','api-key-status','api-status','api-recovery','api-recovery-state','api-recover-send','api-recover-reply','api-abandon','api-new-room-description','api-room-editor','api-room-description','api-save-description','api-delete-room'];
+ const ids=['heartbeat-options','heartbeat-text','heartbeat-delay','mode','group-help','room-state','build-version','chatgpt','nomi','first','settle','play','stop','reset','status','error','count','tabs','events','copy-status','api-options','api-nomi','api-room','api-key','save-api-key','clear-api-key','refresh-api','api-room-name','create-api-room','api-key-status','api-status','api-recovery','api-recovery-state','api-recover-send','api-recover-reply','api-abandon','api-new-room-description','api-room-editor','api-room-description','api-save-description','api-delete-room','api-monitor-live','api-monitor-tab','api-monitor-idle','api-monitor-status','api-journal-tools','api-journal-status','api-clear-journal'];
  const elements=Object.fromEntries(ids.map(id=>[id,{value:'',textContent:'',replaceChildren(){},closest(){return this;},disabled:false}]));
  const calls=[];const payloads=[];const state={running:false,reason:'Ready',turns:0,events:[],tabs:[{id:'1',site:sites[0],connected:true},{id:'2',site:sites[1],room,connected:true}]};
  const context={document:{getElementById:id=>elements[id],createElement:()=>({})},Option:class{},setTimeout,clearTimeout,setInterval:()=>{},

@@ -1,48 +1,67 @@
-# Nomi API Room mode (Chat Bridge 0.4.0)
+# Nomi API Room mode
 
-This is the **third conversation mode**, alongside Direct Chat and Group Chat. It uses one ChatGPT browser tab and a persistent Nomi **API room containing exactly one selected Nomi**. The Nomi's ordinary private chat is not involved, so you can run a World Engine / daily-life simulation entirely inside a separate room.
+Use one ChatGPT tab and a persistent Nomi API room containing **exactly one selected Nomi**. World messages go to that room, never to the Nomi's private chat. Optional live monitoring reads the private chat and reports observations to GPT.
 
 ## Setup
 
-1. Load the updated **extension/** folder via `edge://extensions` → Load unpacked. If already installed, click Reload. (A new permission for `https://api.nomi.ai/*` must be granted.)
-2. Open the bridge dashboard; set Conversation mode to **Nomi API room — one Nomi, every turn**.
-3. Paste a Nomi API key in Settings and click **Save key**. The key is saved in **Edge extension local storage**, not in GitHub, ChatGPT prompts, bridge snapshots, or troubleshooting reports. Access to the extension/browser profile can still expose locally stored keys, so use a trusted profile.
-4. Click **Refresh Nomis and rooms**. Choose **one Nomi** and an existing room containing her, or create a new dedicated room (e.g. `WORLD::Gwen`).
-5. Select your ChatGPT tab, and press Play. ChatGPT is always the initial speaker in this mode; send an opening prompt there if needed.
+1. Install/update the extension following the [main guide](README.md). Select **Nomi API room** in the dashboard.
+2. Save your Nomi API key locally, then refresh the Nomis and rooms list.
+3. Choose one Nomi and a matching existing API room, or create a dedicated room. Multi-Nomi rooms are excluded.
+4. Select the ChatGPT tab with an existing completed opening reply and press Play.
 
-## Manage API rooms from the bridge
+The key is stored in Edge extension local storage and sent only in the authorization header to `https://api.nomi.ai/v1`. It is excluded from GPT prompts, session snapshots, and troubleshooting reports. **Clear key** removes it. Access to the browser profile can expose locally stored data.
 
-With API Room mode selected and the world-engine bridge **stopped**, choose one Nomi and its API room:
+## Room messages and optional live monitoring
 
-- **Create room:** enter an optional name and description (maximum 1,000 characters), then create the room. Backchanneling remains **enabled**.
-- **Save description:** edit the selected room's note and save. Only the `note` property is sent; the selected Nomi and backchanneling setting are not modified. The bridge checks for an edit made elsewhere before writing.
-- **Delete room permanently:** press **Delete room permanently…**, type the room's exact name, and approve a separate final confirmation. A room with an unfinished send/reply checkpoint must be recovered or explicitly abandoned before deletion.
-- Deletion removes the **API room and its room history**, not the Nomi herself. A timeout during deletion has an uncertain outcome; **refresh the list** before trying again. No automatic retries of DELETE or PUT requests.
+Each full GPT world message is sent in ordered, lossless chunks of at most **800 UTF-8 bytes**. There is no overall message-size limit imposed by the bridge, but browser storage is finite. In room-only operation, after every chunk is confirmed, the bridge requests a Nomi reply and forwards it to GPT.
 
-## Every turn
+Enable **Monitor Nomi live private chat** to observe a separate private-chat tab. Select that tab explicitly or let the bridge identify the selected Nomi's conversation. With usable, recently active monitoring, a world message receives an internal delivery acknowledgment instead of requesting a Nomi room reply. GPT can then listen for private-chat exchanges. This acknowledgment is a bridge notice, not Nomi speaking.
 
-- Wait for a **complete ChatGPT answer**. A large World Engine action is allowed without a total message-length limit in the bridge.
-- Split it **losslessly**, preferably at word/paragraph boundaries, into ordered API room messages of **at most 800 UTF-8 bytes each**. For non-ASCII characters such as emoji, this can be fewer than 800 visible characters. No source text is discarded.
-- POST **every chunk in order** to `/rooms/{roomUuid}/chat`. Confirm each submission; track the number of confirmed chunks in session state.
-- Only after the **entire ChatGPT turn** is sent, request **one** reply from the selected Nomi using `/rooms/{roomUuid}/chat/request` with her UUID. This follows the uploader API pattern but invokes the Nomi every conversation turn.
-- Forward that Nomi reply back into ChatGPT; ChatGPT generates the next turn. Repeat until Stop.
+If monitoring is disabled, disconnected, or inactive beyond the configured threshold (default five minutes), future world events use room-only replies automatically. When usable live activity returns, monitoring resumes. Switching paths does not repost completed world events. The dashboard reports the effective path.
 
-## Reliability and limitations
+## GPT commands
 
-- **Durable checkpoint per room:** the bridge records `attempt` before each POST, `confirmed` after each acknowledged POST, and `reply_attempt`/`reply_committed` for Nomi responses. Checkpoints live in Edge extension local storage, survive an ordinary browser restart, and are separate from Nomi room history.
-- **Read-only API GETs** retry at most eight times for transient errors using 1, 2, 4, 8, 16, 30, 30 second exponential backoff. A content POST, room-creation POST, or ambiguous reply POST is **never** automatically repeated.
-- **NoReply / not-ready / rate-limit on a reply request:** continue waiting with exponential backoff (up to 30 seconds between attempts), with no fixed retry count, until Nomi answers or you stop the bridge. The original world message is **not** resent.
-- **Uncertain content POST:** Stop with its 1-based chunk index and the number of confirmed chunks intact. Review the room/checkpoint, click **Resume or authorize uncertain chunk**, and explicitly accept the risk of duplication. Only the first unconfirmed chunk is retried; earlier confirmed chunks are skipped.
-- **Uncertain reply POST:** Review and click **Resume or authorize uncertain reply**. This requests a reply only; it **never** resends the completed world message. A duplicate Nomi reply may result. If a reply was committed before the browser went away, recovery reuses it without requesting another reply.
-- **Stop during chunking:** a fully confirmed prefix is retained; use recovery controls rather than starting a new world turn. Abandoning the local checkpoint does not remove content already present in the room.
-- **Service-worker restart:** an in-flight POST cannot be inferred to have failed. The checkpoint remains unresolved until recovery is expressly authorized. The bridge requires the original ChatGPT conversation and Nomi room when resuming.
-- Only one Nomi may belong to an API room in this mode; rooms containing multiple Nomis are excluded from selection.
-- Storage and browser resources remain finite. The bridge imposes no overall length/truncation threshold on World Engine turns, but an exceptionally large output can exceed browser storage limits.
-- The older Direct Chat and Group Chat modes retain their existing behavior.
-- Existing Direct Chat and browser Group Chat modes are unchanged, including their existing message-size behavior.
-- This is an Edge extension mode, not yet wired into the separate portable Windows desktop wrapper.
-- Live Nomi account testing is needed. Unit/simulated room tests do not establish real-world API delivery.
+Use one standalone command per reply, without code fences. For `[say room]`, only text after the tag is posted. A preamble before a single standalone tag is ignored; malformed or multiple commands are rejected internally. Three consecutive malformed commands stop the bridge.
 
-## Security
+| Command | Effect |
+| --- | --- |
+| `[say room] world event` | Deliver the event to the API room. Untagged replies remain supported as room messages. |
+| `[listening]` | One observation request: return newly captured complete User → Nomi exchanges since the last acknowledged listen. If none completes within 12 seconds, return one internal status and wait for another explicit command. In room-only fallback, report that status immediately. |
+| `[wait]` | Wait passively and indefinitely for a complete exchange; no Nomi send or reply request. |
+| `[tail]` | Return the last ten locally recorded events without consuming the listening position. |
+| `[history]`, `[history 2]` | Return retained history pages, with larger page numbers looking further back. |
+| `[say chat]` | Disabled: private-chat access is read-only. |
 
-The key is passed only to `https://api.nomi.ai/v1` in an Authorization header, from the extension service worker. It is **not** serialized with the bridge state, shown in the room UI, or copied in troubleshooting data. Use **Clear key** to remove it. Do not commit secrets or exported Chrome/Edge profile data to GitHub.
+Neither listening command posts to Nomi or requests a room reply. Catch-up includes all captured new completed exchanges, in order, subject to bounded packets. An unanswered user message remains buffered. The cursor advances only after delivery to GPT is confirmed; another `[listening]` can retrieve further packets. Monitoring alone does not schedule time-of-day world events.
+
+## History and room management
+
+The local journal retains the latest **500 events per API room**, each with up to 6,000 text characters, a speaker, source, and observation timestamp. It survives ordinary browser restart. Timestamps record when the bridge observed messages. The DOM monitor can see at most 50 recent private-chat messages at a time; it cannot reconstruct older, unrecorded conversation history after a restart.
+
+While stopped, use **Clear local history** to erase the journal without deleting Nomi conversations. Room creation supports a name and description; descriptions are limited to 1,000 characters. Saving a description changes only the room note. New rooms retain enabled backchanneling.
+
+**Delete room permanently** requires the exact room name and a final confirmation. It deletes the room and its history, not the Nomi. An unfinished checkpoint must first be recovered or abandoned. If deletion times out, refresh the list before trying again; its outcome may be uncertain.
+
+## Interrupted delivery and recovery
+
+Persistent local checkpoints record attempted and confirmed chunks and requested/saved replies. They survive browser shutdown. An interrupted request is not assumed to have failed.
+
+| State | Recovery |
+| --- | --- |
+| Some chunks confirmed | Inspect the room; resume the first unconfirmed chunk. Confirmed chunks are not resent. |
+| Chunk result uncertain | Inspect before explicitly authorizing retry; the last chunk may already exist in the room. |
+| Reply request uncertain | Recover the reply separately. This does not resend the world message, but retrying may produce another Nomi reply. |
+| Reply already saved | Restore the original GPT conversation and use **Recover Reply**. The saved response is delivered without another Nomi request. |
+| Stopped during a request | Allow an in-flight result to settle and inspect the checkpoint before recovery. Stop cannot undo already submitted content. |
+
+Do not Reset or Abandon a checkpoint you intend to recover. Abandoning local recovery data does not remove messages already sent to Nomi.
+
+Read-only GET requests retry transient errors up to eight attempts. Content/creation POSTs, ambiguous reply POSTs, and room edits/deletions are not automatically repeated. An explicit Nomi not-ready, NoReply, or rate-limit response can retry the reply request with exponential backoff, capped at 30 seconds between attempts, until a reply or Stop. The world text is not resent. Activity/status show attempts, error type, and HTTP status without the key.
+
+During an active API-room reply wait, the extension can reconnect the selected GPT tab for up to **120 seconds**, using the original exact conversation URL. A reply arriving meanwhile is saved. Once that original conversation is ready and draft-free, it is delivered once. If reconnection fails, use Recover Reply after restoring the original conversation. The retry targets the browser tab, not Nomi POSTs. A separately interrupted service worker with an in-flight API request still requires checkpoint recovery.
+
+API mode does not use the browser relay's 15-minute idle watchdog. Temporary tab unavailability can pause progress while Play remains active; tab closure, uncertain sends, or repeated protocol errors can still stop it. Check Activity for the cause.
+
+## Verification limits
+
+Tests exercise command parsing, chunks, checkpoints, retries, recovery, and observation routing with mocked APIs and browser fixtures. They do not send live account messages. Nomi/ChatGPT page changes can break selectors; an unavailable monitor may fall back to room-only replies. Confirm the selected conversations and reported effective mode when running the extension.

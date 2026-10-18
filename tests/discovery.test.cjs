@@ -1,6 +1,6 @@
 const {test}=require('node:test'),assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs');
 const {GroupBridge}=require('../extension/group.js');
-const NomiApiDriver=class {constructor(){} touch(){} publicState(){return null;} pump(){} stopWaiting(){}};
+const NomiApiDriver=class {constructor(){} touch(){} publicState(){return null;} pump(){} async observeLive(){} stopWaiting(){}};
 
 test('discovers existing tabs, injects only missing scripts and lists sleeping tabs without refreshing',async()=>{
  let listener;const injected=[];const connected=new Set([1]);

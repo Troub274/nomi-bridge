@@ -1,6 +1,11 @@
+const WORLD_OBSERVER_BUILD = 'heartbeat-r1';
 const versionLabel = document.getElementById('build-version');
-if (versionLabel) versionLabel.textContent = 'v' + chrome.runtime.getManifest().version;
+if (versionLabel) versionLabel.textContent = 'v' + chrome.runtime.getManifest().version + ' · ' + WORLD_OBSERVER_BUILD;
 const $ = id => document.getElementById(id);
+try {
+  $('heartbeat-text').value = localStorage.getItem('bridge-heartbeat-text') || 'Continue the task.';
+  $('heartbeat-delay').value = localStorage.getItem('bridge-heartbeat-delay') || '10';
+} catch {}
 let actionPending = false;
 let generation = 0;
 let lastState;
@@ -32,21 +37,40 @@ async function request(path, data) {
 }
 function render(state) {
   if (!lastState && state.mode) $('mode').value = state.mode;
+  if (!lastState && state.heartbeatSettings) {
+    $('heartbeat-text').value=state.heartbeatSettings.text || '';
+    $('heartbeat-delay').value=state.heartbeatSettings.delay ?? 10;
+  }
   lastState = state;
   if (state.running) $('mode').value = state.mode || 'direct';
   $('mode').disabled = state.running;
   const group = $('mode').value === 'group';
   const api = $('mode').value === 'api-room';
+  const pulse = $('mode').value === 'heartbeat';
+  $('heartbeat-options').hidden = !pulse;
+  $('heartbeat-text').disabled=state.running;
+  $('heartbeat-delay').disabled=state.running;
+  $('first').closest('label').hidden=pulse;
   $('group-help').hidden = !group;
   $('api-options').hidden = !api;
-  $('nomi').closest('label').hidden = api;
+  $('nomi').closest('label').hidden = api || pulse;
+  if(api){
+    const monitor=$('api-monitor-tab'),old=monitor.value;
+    const tabs=(state.tabs||[]).filter(t=>t.site==='nomi'&&!t.room);
+    monitor.replaceChildren(new Option('Auto-detect selected Nomi when private chat opens',''),
+      ...tabs.map(t=>new Option((t.title||t.url||t.id)+' · window '+(t.window||'?'),t.id)));
+    if(tabs.some(t=>t.id===old))monitor.value=old;
+    $('api-monitor-status').textContent=state.apiRoom?.monitorEnabled?
+      state.apiRoom.monitorConnected?'Monitoring the Nomi private chat — API room reply requests suppressed.':
+      'Waiting for a usable private chat; API room replies are enabled.':'Live monitor disabled; receiving Nomi room replies.';
+  }
   if (api && !apiStartup) { apiStartup = true; void loadApi(); }
   $('room-state').textContent = state.room ? `Auto Chat: ${state.room.autoChat} · ${state.room.userTurn ? 'Waiting for user turn' : 'No user-turn notice'} · Members: ${state.room.members.join(', ')}` : '';
   for (const site of ['chatgpt', 'nomi']) {
     const select = $(site);
     const old = select.value || savedSelection(site);
     const tabs = state.tabs.filter(tab => (group ? site === 'chatgpt' ? tab.site === 'chatgpt' : tab.room :
-      api ? tab.site === 'chatgpt' : !tab.room));
+      (api || pulse) ? tab.site === 'chatgpt' : !tab.room));
     const options = tabs.map(tab => new Option(`${tab.room ? 'Nomi room' : tab.site === 'nomi' ? 'Nomi' : 'ChatGPT'} · ${tab.browser} · window ${tab.window} · ${tab.title || tab.url || tab.id}${tab.connected ? '' : ' — '+(tab.diagnostic || 'Connecting…')}`, tab.id));
     select.replaceChildren(new Option('Select a chat tab…', ''), ...options);
     if (tabs.some(tab => tab.id === old)) select.value = old;
@@ -57,7 +81,7 @@ function render(state) {
     }
     select.disabled = state.running;
   }
-  $('first').disabled = state.running || group || api;
+  $('first').disabled = state.running || group || api || pulse;
   if (api) $('first').value = 'first';
   $('settle').disabled = state.running;
   $('play').disabled = actionPending;
@@ -66,7 +90,11 @@ function render(state) {
   for (const id of ['api-nomi','api-room','api-key','save-api-key','clear-api-key','refresh-api','api-room-name','api-new-room-description','create-api-room']) $(id).disabled = state.running;
   renderRecoveryButtons();
   renderRoomManagementButtons();
-  $('count').textContent = `${state.turns} messages forwarded`;
+  $('api-clear-journal').disabled=state.running || apiManagementPending || recoveryInProgress;
+  $('api-monitor-live').disabled=state.running;
+  $('api-monitor-idle').disabled=state.running || !$('api-monitor-live').checked;
+  $('api-monitor-tab').disabled=state.running || !$('api-monitor-live').checked;
+  $('count').textContent = `${state.turns} ${pulse ? 'heartbeats sent' : 'messages forwarded'}`;
   $('status').textContent = state.reason;
   $('status').className = state.running ? 'running' : '';
   $('tabs').replaceChildren(...state.tabs.map(tab => {
@@ -93,24 +121,57 @@ async function action(name, data = {}) {
 $('play').onclick = () => {
   if (lastState?.running) {action('state'); return;}
   const api = $('mode').value === 'api-room';
+  const pulse = $('mode').value === 'heartbeat';
   const roomId = $('api-room').value;
   const data = {mode: $('mode').value,
-    tabs: [$('chatgpt').value, api ? 'api:room:' + roomId : $('nomi').value],
+    tabs: pulse ? [$('chatgpt').value] : [$('chatgpt').value, api ? 'api:room:' + roomId : $('nomi').value],
+    ...(pulse ? {heartbeatText:$('heartbeat-text').value,heartbeatDelay:Number($('heartbeat-delay').value)} : {}),
     first: api ? 'first' : $('first').value, settle: $('settle').value,
-    ...(api ? {nomiUuid:$('api-nomi').value} : {})};
+    ...(api ? {nomiUuid:$('api-nomi').value,
+      monitorLive:$('api-monitor-live').checked,monitorTab:$('api-monitor-tab').value,
+      monitorIdleSeconds:Number($('api-monitor-idle').value)||300} : {})};
   if (api && (!apiKeyConfigured || !data.nomiUuid || !roomId)) {
     showError(Error('Save the Nomi API key, select one Nomi, and choose or create an API room.'));return;
   }
-  if (!data.tabs[0] || !data.tabs[1]) {showError(Error('Select both chat tabs above. If a chat is missing, refresh that tab in Edge.')); return;}
+  if (!data.tabs[0] || (!pulse && !data.tabs[1])) {showError(Error('Select both chat tabs above. If a chat is missing, refresh that tab in Edge.')); return;}
   if (data.tabs[0] === data.tabs[1]) {showError(Error('Select two different chat tabs.')); return;}
   for (const [index, site] of ['chatgpt', 'nomi'].entries()) {
-    if (api && site === 'nomi') continue;
+    if ((api || pulse) && site === 'nomi') continue;
     try {localStorage.setItem('bridge-' + site, data.tabs[index]);} catch { /* Saving a selection must not prevent Play. */ }
   }
+  if(pulse) try {
+    localStorage.setItem('bridge-heartbeat-text',data.heartbeatText);
+    localStorage.setItem('bridge-heartbeat-delay',String(data.heartbeatDelay));
+  } catch {}
   action('play', data);
 };
 $('stop').onclick = () => action('stop');
 $('mode').onchange = () => {if (lastState) render(lastState);};
+$('api-monitor-live').onchange=()=>{
+  $('api-monitor-tab').disabled=!$('api-monitor-live').checked||!!lastState?.running;
+  $('api-monitor-idle').disabled=!$('api-monitor-live').checked||!!lastState?.running;
+};
+async function refreshJournalStatus(){
+  const roomId=$('api-room').value;
+  if(!roomId){$('api-journal-status').textContent='Select an API room to inspect local history.';return;}
+  try{
+    const state=await request('api-journal',{roomId});
+    if(roomId===$('api-room').value)
+      $('api-journal-status').textContent=(state.count||0)+' locally retained world/live events (latest 500).';
+  }catch(e){$('api-journal-status').textContent=e.message;}
+}
+$('api-clear-journal').onclick=async()=>{
+  const roomId=$('api-room').value;
+  if(!roomId||lastState?.running||apiManagementPending)return;
+  if(!window.confirm('Erase this room’s locally retained world and private-chat observations? The actual Nomi room and chat are unaffected.'))return;
+  apiManagementPending=true;$('api-clear-journal').disabled=true;
+  try{
+    await request('api-clear-journal',{roomId});
+    await refreshJournalStatus();
+    $('api-status').textContent='Local world observation history cleared.';
+  }catch(error){$('api-status').textContent=error.message;}
+  finally{apiManagementPending=false;$('api-clear-journal').disabled=!!lastState?.running;}
+};
 function apiRoomOptions(desiredRoom = '') {
   const id = $('api-nomi').value;
   const old = desiredRoom || $('api-room').value;
@@ -161,11 +222,12 @@ async function loadApi() {
     else if (apiCatalog.nomis.length) $('api-nomi').value=apiCatalog.nomis[0].uuid;
     apiRoomOptions(oldRoom);
     await loadCheckpoint();
+    await refreshJournalStatus();
     $('api-status').textContent='Found '+apiCatalog.nomis.length+' Nomis and '+apiCatalog.rooms.length+' API rooms. Only single-Nomi rooms for the selected Nomi are offered.';
   } catch(error) { $('api-status').textContent=error.message; }
 }
 $('api-nomi').onchange=()=>{apiRoomOptions();void loadCheckpoint();};
-$('api-room').onchange=()=>{showRoomEditor(true);void loadCheckpoint();};
+$('api-room').onchange=()=>{showRoomEditor(true);void loadCheckpoint();void refreshJournalStatus();};
 $('api-save-description').onclick=async()=>{
   const room=selectedApiRoom();
   if(!room||apiManagementPending||lastState?.running)return;
@@ -235,7 +297,12 @@ async function recoverApi(kind){
   if(!window.confirm(warning))return;
   recoveryInProgress=true;renderRecoveryButtons();
   try{
-    const result=await request(kind==='send'?'api-recover-send':'api-recover-reply',{roomId,nomiUuid,chatgptTab});
+    const result=await request(kind==='send'?'api-recover-send':'api-recover-reply',{
+      roomId,nomiUuid,chatgptTab,
+      monitorLive:$('api-monitor-live').checked,
+      monitorTab:$('api-monitor-tab').value,
+      monitorIdleSeconds:Number($('api-monitor-idle').value)||300
+    });
     if(!result.started)throw Error('Recovery did not start.');
     $('api-status').textContent='Recovery requested. Watch the checkpoint and Activity panel for progress.';
   }catch(error){$('api-status').textContent=error.message;}
@@ -307,8 +374,24 @@ refresh(); setInterval(refresh, 1500);
 $('copy-status').onclick = async () => {
   try {
     const state = await request('state');
-    const report = {version: chrome.runtime.getManifest().version, mode: state.mode, room: state.room && {autoChat:state.room.autoChat,userTurn:state.room.userTurn,memberCount:state.room.members.length}, running: state.running, phase: state.phase, reason: state.reason,
-      turns: state.turns, lastDelivery: state.lastDelivery, events: state.events, tabs: state.tabs.map(t => ({site:t.site, connected:t.connected, ready:t.ready,
+    const report = {version: chrome.runtime.getManifest().version, observerBuild: WORLD_OBSERVER_BUILD, mode: state.mode,
+      apiRoom: state.apiRoom && {nomiName:state.apiRoom.nomiName, effectiveMode:state.apiRoom.effectiveMode,
+        monitorEnabled:state.apiRoom.monitorEnabled, monitorConnected:state.apiRoom.monitorConnected,
+        monitorCount:state.apiRoom.monitorCount, monitorIdleSeconds:state.apiRoom.monitorIdleSeconds,
+        pendingReply:state.apiRoom.pendingReply, listenRequestPending:state.apiRoom.listenRequestPending,
+        lastDeliveredSeq:state.apiRoom.lastDeliveredSeq,
+        pendingDeliverySeq:state.apiRoom.pendingDeliverySeq,
+        roomReplyRequests:state.apiRoom.roomReplyRequests,
+        replyAttemptsInTurn:state.apiRoom.replyAttemptsInTurn,
+        replyLastErrorType:state.apiRoom.replyLastErrorType,
+        replyLastHttpStatus:state.apiRoom.replyLastHttpStatus,
+        replyNextRetrySeconds:state.apiRoom.replyNextRetrySeconds,
+        replyWaitStartedAt:state.apiRoom.replyWaitStartedAt},
+      selectedGPTTab:state.pair?.[0]||null, waitingOnTab:state.source||null,
+      tabRetry:state.tabRetry||null,
+      room: state.room && {autoChat:state.room.autoChat,userTurn:state.room.userTurn,memberCount:state.room.members.length}, running: state.running, phase: state.phase, reason: state.reason,
+      turns: state.turns, lastDelivery: state.lastDelivery, events: state.events, tabs: state.tabs.map(t => ({id:t.id,site:t.site, selectedGPT:t.id===state.pair?.[0],
+        connected:t.connected, ready:t.ready,
         busy:t.busy, draft:t.draft, replyCharacters:t.reply?.length || 0, complete:t.complete, completion:t.completion, matches:t.matches, diagnostic:t.diagnostic}))};
     await navigator.clipboard.writeText(JSON.stringify(report, null, 2));
     $('copy-status').textContent = 'Copied — paste into our conversation';
