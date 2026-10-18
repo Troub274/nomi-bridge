@@ -1,15 +1,24 @@
-# Chat Bridge 0.3.9
+# Browser group-room mode
 
-Load the extension folder with Edge's Load unpacked button at edge://extensions. Disable any older Chat Bridge first,  open the extension controls, and select Group room mode. Select ChatGPT first and the Nomi group room second.
+Select **Group room** and choose ChatGPT first and a Nomi browser group room second. Press Play. The bridge sends GPT startup instructions and recent room context. Only room-message content is posted to Nomi; startup/help exchanges remain internal.
 
-Group mode sends GPT startup instructions automatically. Commands: [say] text, [wait], [listening], [invite] exact member name, [play], [pause], [help]. Only [say] text reaches the room. Help/startup acknowledgments stay internal.
+## GPT commands
 
-There is no total text-length limit imposed on group responses. The bridge splits each [say] into ordered messages of at most 800 UTF-16 units, preferring word boundaries and preserving surrogate pairs and all text. Nothing is truncated. GPT may also use multiple [say] blocks. Each command tag starts on a new line. An optional final [play] lets the Nomis choose the next speaker; [invite] name chooses a specific member. A multi-message batch first pauses Auto Chat, confirms each message in order, then executes the final control. Stop preserves the pending queue and prevents further actions. Nomi Auto Chat operates independently of bridge Stop.
+Put each command at the start of its own line, without Markdown fences.
 
-Private two-chat mode retains its previous 750-character truncation policy.
+| Command | Effect |
+| --- | --- |
+| `[say] message` | Post text as the user in the room. |
+| `[wait]` or `[listening]` | Observe further room activity. Resume Auto Chat if it is paused or waiting for the user's turn. |
+| `[invite] exact member name` | Select which Nomi replies next. Ambiguous or missing members are rejected. |
+| `[play]` | Resume Auto Chat and let the Nomis choose the next speaker. |
+| `[pause]` | Pause room Auto Chat. |
+| `[help]` | Send GPT the instructions again, internally. |
 
-72 automated tests pass, including group engine, simulated DOM controls, chunk preservation, message ordering, stop/resume, and direct-chat regression tests. Live Edge end-to-end testing remains; no test messages were sent to the live room. This build updates the browser extension, not the desktop wrapper. Keep Edge running and the computer awake.
+GPT can send several `[say]` blocks, followed optionally by a final `[play]` or `[invite]`. There is no total group-response length limit: each message is split into ordered chunks of at most 800 UTF-16 units, preserving text and surrogate pairs. Multi-message batches pause Auto Chat, confirm each send, then execute the final control.
 
-Open chat tabs are now discovered automatically across windows in the same Edge profile. Missing content scripts are injected without a page refresh. Sleeping tabs are listed. Play activates the two selected tabs and waits for their editors to connect. Stop cancels startup. Reload the extension once for this update; Edge may ask to approve the new scripting/site permissions.
+Sending text and resuming Auto Chat are separate actions. The room can show Auto Chat enabled while waiting at the user's turn. The bridge's Stop button prevents further bridge actions but does not independently pause Nomi Auto Chat. Play resumes pending work; Reset starts fresh and resends startup context.
 
-Listening/wait now resumes Auto Chat when paused or waiting for the user turn. Internal startup/help acknowledgments do not resume it.
+Group `[wait]`/`[listening]` behavior differs from the passive commands in [API Room mode](API-ROOM-MODE.md). Heartbeat's sleep commands are available only in [Heartbeat mode](HEARTBEAT.md).
+
+See the [main guide](README.md) for installation, diagnostics, persistence, and single-session limitations.

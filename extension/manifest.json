@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Chat Bridge",
-  "version": "0.4.2",
-  "description": "Connect chat tabs, join a group room, or speak with a Nomi via a separate API room.",
+  "version": "0.4.3",
+  "description": "Connect chats, join Nomi rooms, or send automatic ChatGPT heartbeats with sleep controls.",
   "permissions": [
     "storage",
     "alarms",

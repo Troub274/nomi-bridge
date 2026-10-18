@@ -1,7 +1,11 @@
-const WORLD_OBSERVER_BUILD = 'tab-retry-r11';
+const WORLD_OBSERVER_BUILD = 'heartbeat-r1';
 const versionLabel = document.getElementById('build-version');
 if (versionLabel) versionLabel.textContent = 'v' + chrome.runtime.getManifest().version + ' · ' + WORLD_OBSERVER_BUILD;
 const $ = id => document.getElementById(id);
+try {
+  $('heartbeat-text').value = localStorage.getItem('bridge-heartbeat-text') || 'Continue the task.';
+  $('heartbeat-delay').value = localStorage.getItem('bridge-heartbeat-delay') || '10';
+} catch {}
 let actionPending = false;
 let generation = 0;
 let lastState;
@@ -33,14 +37,23 @@ async function request(path, data) {
 }
 function render(state) {
   if (!lastState && state.mode) $('mode').value = state.mode;
+  if (!lastState && state.heartbeatSettings) {
+    $('heartbeat-text').value=state.heartbeatSettings.text || '';
+    $('heartbeat-delay').value=state.heartbeatSettings.delay ?? 10;
+  }
   lastState = state;
   if (state.running) $('mode').value = state.mode || 'direct';
   $('mode').disabled = state.running;
   const group = $('mode').value === 'group';
   const api = $('mode').value === 'api-room';
+  const pulse = $('mode').value === 'heartbeat';
+  $('heartbeat-options').hidden = !pulse;
+  $('heartbeat-text').disabled=state.running;
+  $('heartbeat-delay').disabled=state.running;
+  $('first').closest('label').hidden=pulse;
   $('group-help').hidden = !group;
   $('api-options').hidden = !api;
-  $('nomi').closest('label').hidden = api;
+  $('nomi').closest('label').hidden = api || pulse;
   if(api){
     const monitor=$('api-monitor-tab'),old=monitor.value;
     const tabs=(state.tabs||[]).filter(t=>t.site==='nomi'&&!t.room);
@@ -57,7 +70,7 @@ function render(state) {
     const select = $(site);
     const old = select.value || savedSelection(site);
     const tabs = state.tabs.filter(tab => (group ? site === 'chatgpt' ? tab.site === 'chatgpt' : tab.room :
-      api ? tab.site === 'chatgpt' : !tab.room));
+      (api || pulse) ? tab.site === 'chatgpt' : !tab.room));
     const options = tabs.map(tab => new Option(`${tab.room ? 'Nomi room' : tab.site === 'nomi' ? 'Nomi' : 'ChatGPT'} · ${tab.browser} · window ${tab.window} · ${tab.title || tab.url || tab.id}${tab.connected ? '' : ' — '+(tab.diagnostic || 'Connecting…')}`, tab.id));
     select.replaceChildren(new Option('Select a chat tab…', ''), ...options);
     if (tabs.some(tab => tab.id === old)) select.value = old;
@@ -68,7 +81,7 @@ function render(state) {
     }
     select.disabled = state.running;
   }
-  $('first').disabled = state.running || group || api;
+  $('first').disabled = state.running || group || api || pulse;
   if (api) $('first').value = 'first';
   $('settle').disabled = state.running;
   $('play').disabled = actionPending;
@@ -81,7 +94,7 @@ function render(state) {
   $('api-monitor-live').disabled=state.running;
   $('api-monitor-idle').disabled=state.running || !$('api-monitor-live').checked;
   $('api-monitor-tab').disabled=state.running || !$('api-monitor-live').checked;
-  $('count').textContent = `${state.turns} messages forwarded`;
+  $('count').textContent = `${state.turns} ${pulse ? 'heartbeats sent' : 'messages forwarded'}`;
   $('status').textContent = state.reason;
   $('status').className = state.running ? 'running' : '';
   $('tabs').replaceChildren(...state.tabs.map(tab => {
@@ -108,9 +121,11 @@ async function action(name, data = {}) {
 $('play').onclick = () => {
   if (lastState?.running) {action('state'); return;}
   const api = $('mode').value === 'api-room';
+  const pulse = $('mode').value === 'heartbeat';
   const roomId = $('api-room').value;
   const data = {mode: $('mode').value,
-    tabs: [$('chatgpt').value, api ? 'api:room:' + roomId : $('nomi').value],
+    tabs: pulse ? [$('chatgpt').value] : [$('chatgpt').value, api ? 'api:room:' + roomId : $('nomi').value],
+    ...(pulse ? {heartbeatText:$('heartbeat-text').value,heartbeatDelay:Number($('heartbeat-delay').value)} : {}),
     first: api ? 'first' : $('first').value, settle: $('settle').value,
     ...(api ? {nomiUuid:$('api-nomi').value,
       monitorLive:$('api-monitor-live').checked,monitorTab:$('api-monitor-tab').value,
@@ -118,12 +133,16 @@ $('play').onclick = () => {
   if (api && (!apiKeyConfigured || !data.nomiUuid || !roomId)) {
     showError(Error('Save the Nomi API key, select one Nomi, and choose or create an API room.'));return;
   }
-  if (!data.tabs[0] || !data.tabs[1]) {showError(Error('Select both chat tabs above. If a chat is missing, refresh that tab in Edge.')); return;}
+  if (!data.tabs[0] || (!pulse && !data.tabs[1])) {showError(Error('Select both chat tabs above. If a chat is missing, refresh that tab in Edge.')); return;}
   if (data.tabs[0] === data.tabs[1]) {showError(Error('Select two different chat tabs.')); return;}
   for (const [index, site] of ['chatgpt', 'nomi'].entries()) {
-    if (api && site === 'nomi') continue;
+    if ((api || pulse) && site === 'nomi') continue;
     try {localStorage.setItem('bridge-' + site, data.tabs[index]);} catch { /* Saving a selection must not prevent Play. */ }
   }
+  if(pulse) try {
+    localStorage.setItem('bridge-heartbeat-text',data.heartbeatText);
+    localStorage.setItem('bridge-heartbeat-delay',String(data.heartbeatDelay));
+  } catch {}
   action('play', data);
 };
 $('stop').onclick = () => action('stop');

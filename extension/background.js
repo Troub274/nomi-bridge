@@ -1,4 +1,4 @@
-importScripts('engine.js', 'group.js', 'api-room.js', 'api-checkpoint.js', 'world-observer.js', 'api-driver.js');
+importScripts('engine.js', 'group.js', 'heartbeat.js', 'api-room.js', 'api-checkpoint.js', 'world-observer.js', 'api-driver.js');
 let bridge;
 let queue = Promise.resolve();
 const apiDriver = new NomiApiDriver(() => bridge, transaction);
@@ -13,7 +13,7 @@ async function bounded(operation) {
   finally {clearTimeout(timer);}
 }
 async function wakeSelected(data, ticket) {
-  const apiMode = data.mode === 'api-room';
+  const apiMode = data.mode === 'api-room' || data.mode === 'heartbeat';
   const ids = apiMode ? [data.tabs?.[0]] : data.tabs || [data.chatgpt,data.nomi];
   if (!Array.isArray(ids) || ids.length !== (apiMode ? 1 : 2) || ids.some(id=>!/^\d+$/.test(String(id))) || (!apiMode && String(ids[0]) === String(ids[1]))) throw Error('Select the required chat tabs.');
   const check = () => {if (ticket !== startupGeneration) throw Error('Startup cancelled.');};
@@ -93,7 +93,7 @@ function discoveredState() {
 async function load() {
   if (!bridge) {
     const saved = await chrome.storage.session.get('bridge');
-    bridge = new GroupBridge(undefined, saved.bridge || {});
+    bridge = new (globalThis.HeartbeatBridge || GroupBridge)(undefined, saved.bridge || {});
     const interrupted = bridge.mode === 'api-room' && (
       bridge.apiSession?.pendingReply === 'inflight' ||
       (bridge.phase === 'send' && bridge.command?.claimed && bridge.tabs[bridge.command.target]?.site === 'api-room'));
